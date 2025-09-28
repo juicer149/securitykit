@@ -1,15 +1,11 @@
 # securitykit/policies/password.py
 from dataclasses import dataclass
-import logging
-import re
+import re 
 
-from securitykit.core.policy_registry import register_policy
 from securitykit.exceptions import InvalidPolicyConfig
+from securitykit.logging_config import logger
 
-logger = logging.getLogger(__name__)
 
-
-@register_policy("password")
 @dataclass
 class PasswordPolicy:
     min_length: int = 8

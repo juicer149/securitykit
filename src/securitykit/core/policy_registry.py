@@ -1,9 +1,9 @@
 # securitykit/core/policy_registry.py
 import logging
 
+from securitykit import logger
 from securitykit.exceptions import UnknownPolicyError, RegistryConflictError
 
-logger = logging.getLogger(__name__)
 
 _POLICY_REGISTRY: dict[str, type] = {}
 

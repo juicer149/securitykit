@@ -2,10 +2,9 @@
 import logging
 from typing import Type, Callable
 
+from securitykit import logger
 from securitykit.core.interfaces import AlgorithmProtocol
 from securitykit.exceptions import UnknownAlgorithmError, RegistryConflictError
-
-logger = logging.getLogger(__name__)
 
 # Typalias
 AlgorithmClass = Type[AlgorithmProtocol]

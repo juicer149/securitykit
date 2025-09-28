@@ -1,5 +1,4 @@
 # securitykit/algorithms/argon2.py
-import logging
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
 
@@ -7,16 +6,17 @@ from securitykit.core.algorithm_registry import register_algorithm
 from securitykit.core.interfaces import AlgorithmProtocol
 from securitykit.policies.argon2 import Argon2Policy
 from securitykit.exceptions import HashingError, VerificationError
-
-logger = logging.getLogger(__name__)
+from securitykit.logging_config import logger
 
 
 @register_algorithm("argon2")
 class Argon2(AlgorithmProtocol):
     """Password hashing and verification with Argon2id."""
 
-    def __init__(self, policy: Argon2Policy | None = None) -> None:
+    def __init__(self, policy: Argon2Policy | None = None, pepper: str | None = None) -> None:
         self.policy = policy or Argon2Policy()
+        self.pepper = pepper  # 🔑 injected from SecurityFactory via Algorithm
+
         self._hasher = PasswordHasher(
             time_cost=self.policy.time_cost,
             memory_cost=self.policy.memory_cost,
@@ -26,8 +26,8 @@ class Argon2(AlgorithmProtocol):
         )
 
     def _with_pepper(self, password: str) -> str:
-        if self.policy.pepper:
-            return password + self.policy.pepper
+        if self.pepper:
+            return password + self.pepper
         return password
 
     def hash(self, password: str) -> str:
@@ -44,3 +44,13 @@ class Argon2(AlgorithmProtocol):
             return False
         except Exception as e:
             raise VerificationError(f"Argon2 verification failed: {e}") from e
+
+    def needs_rehash(self, stored_hash: str) -> bool:
+        if not stored_hash:
+            return False
+        try:
+            return self._hasher.check_needs_rehash(stored_hash)
+        except Exception as e:
+            logger.error("Argon2 rehash check failed: %s", e)
+            return False
+
