@@ -6,19 +6,12 @@ from securitykit.policies.password import PasswordPolicy
 from securitykit.exceptions import ConfigValidationError
 
 
-def test_password_policy_disabled_by_default():
+def test_password_policy_defaults():
+    """If no config is provided, PasswordPolicy should load with defaults."""
     factory = SecurityFactory({})
     policy = factory.get_password_policy()
-    assert policy is None
-
-
-def test_password_policy_enabled_with_defaults():
-    config = {"PASSWORD_SECURITY": "true"}
-    factory = SecurityFactory(config)
-    policy = factory.get_password_policy()
-
     assert isinstance(policy, PasswordPolicy)
-    # default values från dataclass
+    # Default values from dataclass
     assert policy.min_length == 8
     assert policy.require_upper is True
     assert policy.require_lower is True
@@ -37,28 +30,24 @@ def test_password_policy_enabled_with_defaults():
     ],
 )
 def test_password_policy_reads_from_config(key, value, expected):
-    config = {
-        "PASSWORD_SECURITY": "true",
-        key: value,
-    }
+    """PasswordPolicy should correctly parse values from config."""
+    config = {key: value}
     factory = SecurityFactory(config)
     policy = factory.get_password_policy()
     assert getattr(policy, key.replace("PASSWORD_", "").lower()) == expected
 
 
 def test_password_policy_invalid_min_length():
-    config = {
-        "PASSWORD_SECURITY": "true",
-        "PASSWORD_MIN_LENGTH": "0",  # för kort
-    }
+    """Policy should raise ConfigValidationError if min_length is invalid."""
+    config = {"PASSWORD_MIN_LENGTH": "0"}  # too short
     factory = SecurityFactory(config)
     with pytest.raises(ConfigValidationError):
         factory.get_password_policy()
 
 
 def test_password_policy_validation_works():
+    """PasswordPolicy should enforce configured rules."""
     config = {
-        "PASSWORD_SECURITY": "true",
         "PASSWORD_MIN_LENGTH": "8",
         "PASSWORD_REQUIRE_UPPER": "true",
         "PASSWORD_REQUIRE_DIGIT": "true",
@@ -67,10 +56,9 @@ def test_password_policy_validation_works():
     factory = SecurityFactory(config)
     policy = factory.get_password_policy()
 
-    # ska godkänna ett starkt lösenord
+    # Should accept a strong password
     policy.validate("StrongP@ssw0rd")
 
-    # ska avvisa lösenord som inte uppfyller kraven
+    # Should reject weak passwords
     with pytest.raises(Exception):
-        policy.validate("weak")  # för kort, saknar krav
-
+        policy.validate("weak")  # too short, missing requirements

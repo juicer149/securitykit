@@ -13,10 +13,8 @@ from securitykit.logging_config import logger
 class Argon2(AlgorithmProtocol):
     """Password hashing and verification with Argon2id."""
 
-    def __init__(self, policy: Argon2Policy | None = None, pepper: str | None = None) -> None:
+    def __init__(self, policy: Argon2Policy | None = None) -> None:
         self.policy = policy or Argon2Policy()
-        self.pepper = pepper  # 🔑 injected from SecurityFactory via Algorithm
-
         self._hasher = PasswordHasher(
             time_cost=self.policy.time_cost,
             memory_cost=self.policy.memory_cost,
@@ -25,21 +23,16 @@ class Argon2(AlgorithmProtocol):
             salt_len=self.policy.salt_length,
         )
 
-    def _with_pepper(self, password: str) -> str:
-        if self.pepper:
-            return password + self.pepper
-        return password
-
     def hash(self, password: str) -> str:
         if not password:
             raise HashingError("Password cannot be empty")
-        return self._hasher.hash(self._with_pepper(password))
+        return self._hasher.hash(password)
 
     def verify(self, stored_hash: str | None, password: str | None) -> bool:
         if not stored_hash or not password:
             return False
         try:
-            return self._hasher.verify(stored_hash, self._with_pepper(password))
+            return self._hasher.verify(stored_hash, password)
         except VerifyMismatchError:
             return False
         except Exception as e:
@@ -53,4 +46,3 @@ class Argon2(AlgorithmProtocol):
         except Exception as e:
             logger.error("Argon2 rehash check failed: %s", e)
             return False
-

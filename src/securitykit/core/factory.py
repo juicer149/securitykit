@@ -11,7 +11,14 @@ from securitykit.logging_config import logger
 
 
 # Boolean string mapping (explicit, no int parsing like "0"/"1")
-BOOL_MAP = {"true": True, "on": True, "yes": True, "false": False, "off": False, "no": False}
+BOOL_MAP = {
+    "true": True,
+    "on": True,
+    "yes": True,
+    "false": False,
+    "off": False,
+    "no": False,
+}
 
 
 def _parse_value(value: str) -> Any:
@@ -67,33 +74,37 @@ class SecurityFactory:
     def get_policy(self, name: str) -> object:
         """Hashing policy (e.g. Argon2)."""
         policy_cls = get_policy_class(name)
-        return _build_policy(policy_cls, self.config, prefix=f"{name.upper()}_", name=f"policy '{name}'")
+        return _build_policy(
+            policy_cls,
+            self.config,
+            prefix=f"{name.upper()}_",
+            name=f"policy '{name}'",
+        )
 
     def get_algorithm(self) -> Algorithm:
         """
         Return an Algorithm wrapper for the chosen HASH_VARIANT.
-        Passes optional global PEPPER to the algorithm implementation.
+        Passes optional global PEPPER_VALUE to the algorithm implementation.
         """
         variant = str(self.config.get("HASH_VARIANT", "argon2")).lower()
         policy = self.get_policy(variant)
 
         # 🔑 global pepper support (applies to all algorithms)
-        pepper = self.config.get("PEPPER")
+        pepper = self.config.get("PEPPER_VALUE") or None
 
-        if pepper:
-            return Algorithm(variant=variant, policy=policy, pepper=pepper)
-        return Algorithm(variant=variant, policy=policy)
+        return Algorithm(variant=variant, policy=policy, pepper=pepper)
 
-    def get_password_policy(self) -> PasswordPolicy | None:
-        """Standalone password policy (not tied to hash variant)."""
-        enabled = _parse_value(self.config.get("PASSWORD_SECURITY", False))
-        if not enabled:
-            return None
-        return _build_policy(PasswordPolicy, self.config, prefix="PASSWORD_", name="PasswordPolicy")
+    def get_password_policy(self) -> PasswordPolicy:
+        """Always return a PasswordPolicy (no opt-out flag anymore)."""
+        return _build_policy(
+            PasswordPolicy,
+            self.config,
+            prefix="PASSWORD_",
+            name="PasswordPolicy",
+        )
 
     def get_password_security(self) -> PasswordSecurity:
         """High-level API = password validation + hashing."""
-        policy = self.get_password_policy() or PasswordPolicy()
+        policy = self.get_password_policy()
         algo = self.get_algorithm()
         return PasswordSecurity(policy, algo)
-

@@ -42,7 +42,7 @@ def test_warns_if_memory_cost_above_max(caplog):
 
 
 def test_factory_invalid_config_raises():
-    """Ogiltiga config-värden ska kasta ConfigValidationError."""
+    """Invalid config values should raise ConfigValidationError."""
     config = {
         "HASH_VARIANT": "argon2",
         "ARGON2_TIME_COST": "not-a-number",
@@ -57,7 +57,7 @@ def test_factory_invalid_config_raises():
 
 
 def test_password_security_rehash_needed():
-    """Simulerar ett rehash-scenario med dummy-algoritm."""
+    """Simulate a rehash scenario with a dummy algorithm."""
     policy = PasswordPolicy(min_length=8, require_upper=False, require_special=False)
 
     class DummyAlgo:
@@ -66,5 +66,5 @@ def test_password_security_rehash_needed():
         def needs_rehash(self, h): return True
 
     ps = PasswordSecurity(policy, DummyAlgo())
-    new_hash = ps.rehash("oldhash", "password123")
+    new_hash = ps.rehash("password123", "oldhash")  # fixed order
     assert new_hash == "hash-password123"

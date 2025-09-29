@@ -3,9 +3,10 @@ from securitykit.algorithms.argon2 import Argon2
 from securitykit.policies.argon2 import Argon2Policy
 
 
-@pytest.mark.parametrize("pepper", [None, "supersecretpepper"])
-def test_argon2_hash_and_verify(pepper):
-    """Hash och verify ska fungera både med och utan pepper."""
+def test_argon2_hash_and_verify():
+    """
+    Argon2 hashing and verification should work correctly.
+    """
     policy = Argon2Policy(
         time_cost=2,
         memory_cost=65536,
@@ -13,21 +14,23 @@ def test_argon2_hash_and_verify(pepper):
         hash_length=32,
         salt_length=16,
     )
-    algo = Argon2(policy, pepper=pepper)
+    algo = Argon2(policy)
 
     password = "MySecureP@ssw0rd!"
     hash1 = algo.hash(password)
     assert isinstance(hash1, str)
 
-    # Rätt lösenord ska verifiera
+    # Correct password should verify
     assert algo.verify(hash1, password)
 
-    # Fel lösenord ska inte verifiera
+    # Wrong password should not verify
     assert not algo.verify(hash1, "WrongPassword123")
 
 
 def test_argon2_salt_uniqueness():
-    """Samma lösenord ska ge olika hashvärden p.g.a. slumpmässig salt."""
+    """
+    The same password should produce different hashes because of random salt.
+    """
     policy = Argon2Policy(
         time_cost=2,
         memory_cost=65536,
@@ -41,14 +44,16 @@ def test_argon2_salt_uniqueness():
     hash1 = algo.hash(password)
     hash2 = algo.hash(password)
 
-    assert hash1 != hash2  # salt ger olika hash
+    assert hash1 != hash2  # Different salt → different hashes
     assert algo.verify(hash1, password)
     assert algo.verify(hash2, password)
 
 
 @pytest.mark.parametrize("password", ["a", "x" * 1000])
 def test_argon2_edge_passwords(password):
-    """Klarar både väldigt korta och väldigt långa lösenord."""
+    """
+    Argon2 should handle both very short and very long passwords.
+    """
     policy = Argon2Policy(
         time_cost=2,
         memory_cost=65536,
@@ -56,7 +61,7 @@ def test_argon2_edge_passwords(password):
         hash_length=32,
         salt_length=16,
     )
-    algo = Argon2(policy, pepper="edgepepper")
+    algo = Argon2(policy)
 
     hash_value = algo.hash(password)
     assert algo.verify(hash_value, password)
