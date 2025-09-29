@@ -17,7 +17,6 @@ ARGON2_RECOMMENDED_TIME_COST = 2
 ARGON2_RECOMMENDED_MEMORY = 64 * 1024    # 64 MiB
 ARGON2_RECOMMENDED_PARALLELISM = 1
 ARGON2_RECOMMENDED_HASH_LENGTH = 32
-# Recommended salt length is typically 16 bytes, so reuse ARGON2_MIN_SALT_LENGTH
 
 # --- Upper limits (warnings only) ---
 ARGON2_MAX_TIME_COST = 6          # above this = performance / DoS risk
@@ -35,6 +34,12 @@ class Argon2Policy:
     parallelism: int = ARGON2_RECOMMENDED_PARALLELISM
     hash_length: int = ARGON2_RECOMMENDED_HASH_LENGTH
     salt_length: int = ARGON2_MIN_SALT_LENGTH
+
+    BENCH_SCHEMA = {
+        "time_cost": [1, 2, 3, 4, 5, 6],
+        "memory_cost": [8*1024, 16*1024, 32*1024, 64*1024, 128*1024, 256*1024],
+        "parallelism": [1, 2, 3, 4],
+        }
 
     def __post_init__(self):
         # --- Hard checks ---

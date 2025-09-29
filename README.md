@@ -1,7 +1,8 @@
 # SecurityKit
 
 A modular and extensible **password security toolkit** for Python.  
-It provides consistent APIs for **password hashing**, **global pepper support**, and **password policy enforcement**, with configuration via `.env` or dicts.
+It provides consistent APIs for **password hashing**, **global pepper support**, and **password policy enforcement**, with configuration via `.env` or dicts.  
+Now includes a **benchmark engine** to auto-tune Argon2 parameters for your hardware.
 
 ---
 
@@ -29,6 +30,11 @@ It provides consistent APIs for **password hashing**, **global pepper support**,
   * `.env` support → global pepper (`PEPPER_VALUE`)
   * `.env` support → password policy (`PASSWORD_MIN_LENGTH`, etc.)
 
+* **Benchmarking**
+  * Built-in benchmark runner (`make bench`) to tune hashing cost for your hardware
+  * Exports balanced config directly into `.env.local`
+  * Balancing strategy prefers higher memory and multi-core parallelism when possible
+
 * **Extensibility**
   * Add new algorithms with `@register_algorithm("bcrypt")`
   * Add new policies with `@register_policy("argon2")`, etc.
@@ -43,7 +49,7 @@ It provides consistent APIs for **password hashing**, **global pepper support**,
 git clone https://github.com/yourname/securitykit.git
 cd securitykit
 
-# create venv and install in editable mode with dev tools
+# create venv and install in editable mode with dev + bench extras
 make install
 ````
 
@@ -82,7 +88,7 @@ policy.validate("short")           # raises InvalidPolicyConfig
 
 ### 3. Using the SecurityFactory with `.env`
 
-`.env`:
+`.env` or `.env.local`:
 
 ```env
 HASH_VARIANT=argon2
@@ -132,6 +138,31 @@ if hasher.needs_rehash(hash):
 
 ---
 
+## Benchmarking
+
+SecurityKit can auto-tune Argon2 parameters to ~250 ms runtime on your hardware.
+This makes it easy to get a **baseline config** that balances security and performance.
+
+Run:
+
+```bash
+make bench
+```
+
+Options:
+
+```bash
+make bench ARGS="--variant argon2 --target-ms 500 --export-file .env.local"
+```
+
+* `--variant`: hash algorithm (default: argon2)
+* `--target-ms`: target runtime in milliseconds (default: 250)
+* `--export-file`: optional, write best config to `.env.local`
+
+💡 By default, if SecurityKit does not find a valid config in `.env` or `.env.local`, it will automatically run a benchmark on import and save the result to `.env.local`.
+
+---
+
 ## Running Tests
 
 ```bash
@@ -143,7 +174,7 @@ make test
 ## Roadmap
 
 * [ ] Add more algorithms (Bcrypt, PBKDF2, Scrypt)
-* [ ] Benchmark utility to auto-tune defaults for your hardware
+* [ ] Smarter balancing strategies in benchmark (favoring high memory & multi-core parallelism)
 * [ ] Integration helpers for Flask / FastAPI
 * [ ] Password rehashing helpers (`rehash(password, old_hash)`)
 * [ ] Key derivation utilities for symmetric crypto

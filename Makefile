@@ -15,6 +15,7 @@ help:
 	@echo "  make lint        Run ruff linter"
 	@echo "  make format      Auto-format code with black"
 	@echo "  make typecheck   Run mypy type checks"
+	@echo "  make bench       Run benchmark (pass args via ARGS='...')"
 	@echo "  make clean       Remove caches and build artifacts"
 
 venv:
@@ -22,7 +23,7 @@ venv:
 	$(PIP) install --upgrade pip
 
 install: venv
-	$(PIP) install -e ".[dev]"
+	$(PIP) install -e ".[dev,bench]"
 
 test:
 	$(PYTEST) -v --cov=src --cov-report=term-missing
@@ -35,6 +36,9 @@ format:
 
 typecheck:
 	$(VENV)/bin/mypy src
+
+bench:
+	$(PYTHON) -m securitykit.bench.bench $(ARGS)
 
 # Clean pyc/__pycache__
 clean:

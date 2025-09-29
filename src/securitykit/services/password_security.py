@@ -1,4 +1,4 @@
-# securitykit/services/password_security.py
+# src/securitykit/services/password_security.py
 """
 Password security service: combines policy enforcement and hashing.
 
@@ -27,7 +27,10 @@ Notes:
 """
 
 from typing import Optional
+import os
+
 from securitykit.core.algorithm import Algorithm
+from securitykit.core.policy_registry import get_policy_class
 from securitykit.policies.password import PasswordPolicy
 from securitykit.exceptions import InvalidPolicyConfig, VerificationError
 from securitykit.logging_config import logger
@@ -139,3 +142,35 @@ class PasswordSecurity:
         if self.needs_rehash(old_hash):
             return self.hash(password)
         return old_hash
+
+    # -------------------
+    # Factory
+    # -------------------
+    @classmethod
+    def from_env(cls) -> "PasswordSecurity":
+        """
+        Build a PasswordSecurity service from environment variables (.env/.env.local).
+        """
+        variant = os.getenv("HASH_VARIANT", "argon2").lower()
+        policy_cls = get_policy_class(variant)
+
+        kwargs = {}
+        for field in getattr(policy_cls, "BENCH_SCHEMA", {}).keys():
+            env_key = f"{variant.upper()}_{field.upper()}"
+            value = os.getenv(env_key)
+            if value is None:
+                raise RuntimeError(f"Missing required env config: {env_key}")
+            kwargs[field] = int(value)
+
+        algo_policy = policy_cls(**kwargs)
+        algo = Algorithm(variant, algo_policy)
+
+        pwd_policy = PasswordPolicy(
+            min_length=int(os.getenv("PASSWORD_MIN_LENGTH", 12)),
+            require_upper=os.getenv("PASSWORD_REQUIRE_UPPER", "true").lower() in ("1", "true", "yes", "on"),
+            require_lower=os.getenv("PASSWORD_REQUIRE_LOWER", "true").lower() in ("1", "true", "yes", "on"),
+            require_digit=os.getenv("PASSWORD_REQUIRE_DIGIT", "true").lower() in ("1", "true", "yes", "on"),
+            require_special=os.getenv("PASSWORD_REQUIRE_SPECIAL", "true").lower() in ("1", "true", "yes", "on"),
+        )
+
+        return cls(pwd_policy, algo)
