@@ -1,7 +1,9 @@
 # securitykit/policies/argon2.py
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
+from typing import Any, ClassVar
 
 from securitykit.core.policy_registry import register_policy
+from securitykit.core.interfaces import PolicyProtocol
 from securitykit.exceptions import InvalidPolicyConfig
 from securitykit.logging_config import logger
 
@@ -26,7 +28,7 @@ ARGON2_MAX_PARALLELISM = 4        # >4 can cause resource strain
 
 @register_policy("argon2")
 @dataclass
-class Argon2Policy:
+class Argon2Policy(PolicyProtocol):
     """Configuration policy for Argon2 password hashing."""
 
     time_cost: int = ARGON2_RECOMMENDED_TIME_COST
@@ -35,11 +37,16 @@ class Argon2Policy:
     hash_length: int = ARGON2_RECOMMENDED_HASH_LENGTH
     salt_length: int = ARGON2_MIN_SALT_LENGTH
 
-    BENCH_SCHEMA = {
+
+    BENCH_SCHEMA: ClassVar[dict[str, list[int]]] = {
         "time_cost": [1, 2, 3, 4, 5, 6],
         "memory_cost": [8*1024, 16*1024, 32*1024, 64*1024, 128*1024, 256*1024],
         "parallelism": [1, 2, 3, 4],
-        }
+    }
+
+    def to_dict(self) -> dict[str, Any]:
+        """Returns the policy as a dictionary"""
+        return asdict(self)
 
     def __post_init__(self):
         # --- Hard checks ---
@@ -83,4 +90,3 @@ class Argon2Policy:
         if self.parallelism > ARGON2_MAX_PARALLELISM:
             logger.warning("Argon2 parallelism %d unusually high (> %d).",
                            self.parallelism, ARGON2_MAX_PARALLELISM)
-

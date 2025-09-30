@@ -5,12 +5,12 @@ from typing import Any, Mapping, Type
 from securitykit.services.password_security import PasswordSecurity
 from securitykit.core.algorithm import Algorithm
 from securitykit.core.policy_registry import get_policy_class
+from securitykit.core.interfaces import PolicyProtocol
 from securitykit.policies.password import PasswordPolicy
 from securitykit.exceptions import ConfigValidationError
 from securitykit.logging_config import logger
 
 
-# Boolean string mapping (explicit, no int parsing like "0"/"1")
 BOOL_MAP = {
     "true": True,
     "on": True,
@@ -33,7 +33,7 @@ def _parse_value(value: str) -> Any:
     return value
 
 
-def _build_policy(policy_cls: Type, config: Mapping[str, Any], prefix: str, name: str) -> object:
+def _build_policy(policy_cls: Type, config: Mapping[str, Any], prefix: str, name: str) -> PolicyProtocol:
     """Helper to construct a policy from config with validation and defaults."""
     params = inspect.signature(policy_cls).parameters
     values: dict[str, object] = {}
@@ -71,7 +71,7 @@ class SecurityFactory:
     def __init__(self, config: Mapping[str, Any]):
         self.config = config
 
-    def get_policy(self, name: str) -> object:
+    def get_policy(self, name: str) -> PolicyProtocol:
         """Hashing policy (e.g. Argon2)."""
         policy_cls = get_policy_class(name)
         return _build_policy(
@@ -81,6 +81,10 @@ class SecurityFactory:
             name=f"policy '{name}'",
         )
 
+    def get_policy_dict(self, name: str) -> dict[str, Any]:
+        """Return policy parameters as dict."""
+        return self.get_policy(name).to_dict()
+
     def get_algorithm(self) -> Algorithm:
         """
         Return an Algorithm wrapper for the chosen HASH_VARIANT.
@@ -89,9 +93,7 @@ class SecurityFactory:
         variant = str(self.config.get("HASH_VARIANT", "argon2")).lower()
         policy = self.get_policy(variant)
 
-        # 🔑 global pepper support (applies to all algorithms)
         pepper = self.config.get("PEPPER_VALUE") or None
-
         return Algorithm(variant=variant, policy=policy, pepper=pepper)
 
     def get_password_policy(self) -> PasswordPolicy:

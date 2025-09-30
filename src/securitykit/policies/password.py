@@ -1,7 +1,9 @@
 # securitykit/policies/password.py
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
+from typing import Any, ClassVar
 import re
 
+from securitykit.core.interfaces import PolicyProtocol
 from securitykit.exceptions import InvalidPolicyConfig
 from securitykit.logging_config import logger
 
@@ -14,7 +16,7 @@ PASSWORD_RECOMMENDED_MIN_LENGTH = 12
 
 
 @dataclass
-class PasswordPolicy:
+class PasswordPolicy(PolicyProtocol):
     """
     Password policy for enforcing complexity rules.
 
@@ -27,6 +29,13 @@ class PasswordPolicy:
     require_lower: bool = True
     require_digit: bool = True
     require_special: bool = True
+
+    # Empty schema since this policy is not benchmarked
+    BENCH_SCHEMA: ClassVar[dict[str, list[int]]] = {}
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return current policy config as a dict."""
+        return asdict(self)
 
     def __post_init__(self):
         # Validate min_length boundaries

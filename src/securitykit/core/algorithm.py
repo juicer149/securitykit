@@ -2,7 +2,7 @@
 from typing import Any
 
 from securitykit.core.algorithm_registry import get_algorithm_class
-from securitykit.core.interfaces import AlgorithmProtocol
+from securitykit.core.interfaces import AlgorithmProtocol, PolicyProtocol
 from securitykit.exceptions import HashingError, VerificationError
 from securitykit.logging_config import logger
 
@@ -18,6 +18,7 @@ class Algorithm:
         algo_cls = get_algorithm_class(variant)
         self.impl: AlgorithmProtocol = algo_cls(policy, **kwargs)
         self.variant = variant.lower()
+        self.policy:  PolicyProtocol | None = policy
         self.pepper = pepper  # orthogonal, applies to any algorithm if set
         logger.debug("Algorithm initialized with variant=%s, pepper=%s", self.variant, bool(pepper))
 
@@ -47,6 +48,14 @@ class Algorithm:
         except Exception as e:
             logger.error("Needs_rehash failed for %s: %s", self.variant, e)
             return False
+
+    def get_policy_dict(self) -> dict[str, Any]:
+        """
+        Return the current policy as a dict, if available.
+        """
+        if self.policy and hasattr(self.policy, "to_dict"):
+            return self.policy.to_dict()
+        return {}
 
     def __call__(self, password: str) -> str:
         return self.hash(password)
