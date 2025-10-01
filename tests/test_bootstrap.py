@@ -1,162 +1,127 @@
+# tests/test_bootstrap.py
 import os
-import hashlib
 from pathlib import Path
-from contextlib import contextmanager
 
-try:
-    import portalocker
-    HAVE_PORTALOCKER = True
-except ImportError:
-    HAVE_PORTALOCKER = False
-
+import pytest
 from dotenv import load_dotenv
 
-from securitykit.logging_config import logger
-from securitykit.core.policy_registry import get_policy_class
-from securitykit.bench.bench import run_benchmark, export_env
-from securitykit.version import __version__
-from securitykit.config import ENV_VARS, DEFAULTS
+from securitykit.bootstrap import ensure_env_config
+from securitykit.core.policy_registry import list_policies, get_policy_class
+from securitykit.config import ENV_VARS
 
 
-# -------------------
-# Helpers
-# -------------------
-@contextmanager
-def _file_lock(path: Path):
-    if not HAVE_PORTALOCKER:
-        yield
-        return
-    lock_path = str(path) + ".lock"
-    with open(lock_path, "w") as f:
-        portalocker.lock(f, portalocker.LOCK_EX)
-        try:
-            yield
-        finally:
-            portalocker.unlock(f)
+@pytest.fixture(autouse=True)
+def temp_env_dir(tmp_path, monkeypatch):
+    """
+    Fixture som automatiskt byter working directory till en tempdir
+    och rensar miljövariabler mellan tester.
+    """
+    monkeypatch.chdir(tmp_path)
+
+    # Spara undan originalmiljö
+    old_env = os.environ.copy()
+
+    yield tmp_path
+
+    # Återställ miljövariabler efter test
+    os.environ.clear()
+    os.environ.update(old_env)
 
 
-def _sha256_of(config: dict[str, str]) -> str:
-    items = [f"{k}={v}" for k, v in sorted(config.items())]
-    blob = "\n".join(items).encode()
-    return hashlib.sha256(blob).hexdigest()
+@pytest.fixture(autouse=True)
+def mock_benchmark_runner(monkeypatch):
+    """
+    Mockar BenchmarkRunner.run så att testerna blir snabba.
+    Returnerar variant-specifik fake-benchmark baserat på policyklassens BENCH_SCHEMA.
+    """
+    def fake_run(self):
+        policy_cls = get_policy_class(self.config.variant)
+        schema = getattr(policy_cls, "BENCH_SCHEMA", {})
+
+        # bygg "best" dict
+        env_config = {"HASH_VARIANT": self.config.variant}
+        for field, values in schema.items():
+            # välj mittvärdet i schemat som fake
+            mid_idx = len(values) // 2
+            env_config[f"{self.config.variant.upper()}_{field.upper()}"] = str(values[mid_idx])
+
+        return {
+            "best": env_config,
+            "best_result": None,
+            "near": [],
+            "schema_keys": list(schema.keys()),
+        }
+
+    monkeypatch.setattr("securitykit.bench.runner.BenchmarkRunner.run", fake_run)
+    yield
 
 
-def _validate_generated_block(path: Path):
-    """Check integrity of an existing .env.local (GENERATED_SHA256)."""
-    if not path.exists():
-        return
-    try:
-        content = path.read_text().splitlines()
-    except Exception:
-        return
-    kv: dict[str, str] = {}
-    for line in content:
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        k, v = line.split("=", 1)
-        kv[k.strip()] = v.strip()
-    recorded = kv.get("GENERATED_SHA256")
-    if not recorded:
-        return
-    tmp = dict(kv)
-    tmp.pop("GENERATED_SHA256", None)
-    recalculated = _sha256_of(tmp)
-    if recorded != recalculated:
-        logger.warning(
-            "Integrity mismatch for %s (GENERATED_SHA256 differs). File may have been modified.",
-            path,
-        )
+@pytest.mark.parametrize("variant", list_policies())
+def test_bootstrap_regenerates_on_partial_config(monkeypatch, caplog, variant, temp_env_dir):
+    """Partial config ska regenereras till komplett .env.local."""
+
+    monkeypatch.setenv(ENV_VARS["AUTO_BENCHMARK"], "1")
+
+    env_file = Path(".env.local")
+    env_file.write_text(f"{ENV_VARS['HASH_VARIANT']}={variant}\n")
+
+    ensure_env_config()
+
+    content = env_file.read_text()
+    policy_cls = get_policy_class(variant)
+
+    # Alla BENCH_SCHEMA-nycklar ska vara med
+    for field in policy_cls.BENCH_SCHEMA.keys():
+        assert f"{variant.upper()}_{field.upper()}" in content
+
+    # Metadata ska finnas
+    assert "GENERATED_BY" in content
+    assert "GENERATED_SHA256" in content
+
+    # Logg ska indikera regeneration
+    assert "Regenerating full set" in caplog.text
+
+    # ✅ Extra check: värdena i filen matchar mittvärdet i BENCH_SCHEMA
+    for field, values in policy_cls.BENCH_SCHEMA.items():
+        expected_value = str(values[len(values) // 2])
+        assert f"{variant.upper()}_{field.upper()}={expected_value}" in content
 
 
-def _bool_env(name: str, default: str = "0") -> bool:
-    return os.getenv(name, default).lower() in ("1", "true", "yes", "on")
+@pytest.mark.parametrize("variant", list_policies())
+def test_bootstrap_skips_when_complete_config(monkeypatch, caplog, variant, temp_env_dir):
+    """Om configen redan är komplett ska bootstrap inte regenerera något."""
+
+    monkeypatch.setenv(ENV_VARS["AUTO_BENCHMARK"], "1")
+
+    env_file = Path(".env.local")
+
+    # Skapa en komplett config manuellt
+    policy_cls = get_policy_class(variant)
+    lines = [f"{ENV_VARS['HASH_VARIANT']}={variant}"]
+    for field in policy_cls.BENCH_SCHEMA.keys():
+        lines.append(f"{variant.upper()}_{field.upper()}=123")
+    env_file.write_text("\n".join(lines))
+
+    ensure_env_config()
+
+    assert "Regenerating full set" not in caplog.text
 
 
-# -------------------
-# Auto-benchmark bootstrap
-# -------------------
-def ensure_env_config():
-    if _bool_env(ENV_VARS["SECURITYKIT_DISABLE_BOOTSTRAP"]):
-        logger.info("Bootstrap disabled via SECURITYKIT_DISABLE_BOOTSTRAP=1")
-        return
+def test_bootstrap_disabled(monkeypatch, caplog, temp_env_dir):
+    """Om SECURITYKIT_DISABLE_BOOTSTRAP=1 ska bootstrap inte köras."""
 
-    # Load layering
-    load_dotenv(Path(".env"), override=False)
-    load_dotenv(Path(".env.local"), override=True)
+    monkeypatch.setenv(ENV_VARS["SECURITYKIT_DISABLE_BOOTSTRAP"], "1")
 
-    # Validate integrity if .env.local exists
-    _validate_generated_block(Path(".env.local"))
+    ensure_env_config()
 
-    variant = os.getenv(ENV_VARS["HASH_VARIANT"], DEFAULTS["HASH_VARIANT"]).lower()
-    try:
-        policy_cls = get_policy_class(variant)
-    except Exception as e:
-        logger.error("Unknown HASH_VARIANT=%s – aborting bootstrap (%s).", variant, e)
-        return
+    assert "Bootstrap disabled" in caplog.text
 
-    bench_schema = getattr(policy_cls, "BENCH_SCHEMA", {})
-    required_prefix = variant.upper() + "_"
-    required_keys = [f"{required_prefix}{field.upper()}" for field in bench_schema.keys()]
 
-    present = [k for k in required_keys if k in os.environ]
-    missing = [k for k in required_keys if k not in os.environ]
+def test_bootstrap_fails_on_unknown_variant(monkeypatch, caplog, temp_env_dir):
+    """Om HASH_VARIANT pekar på en okänd policy ska bootstrap logga fel."""
 
-    if not missing:
-        logger.debug("All hashing parameters present for %s.", variant)
-        return
+    monkeypatch.setenv(ENV_VARS["HASH_VARIANT"], "doesnotexist")
 
-    if present and missing:
-        logger.warning(
-            "Partial %s config detected (%d present, %d missing). Regenerating full set.",
-            variant,
-            len(present),
-            len(missing),
-        )
+    ensure_env_config()
 
-    if not _bool_env(ENV_VARS["AUTO_BENCHMARK"], DEFAULTS["AUTO_BENCHMARK"]):
-        env_mode = os.getenv(ENV_VARS["SECURITYKIT_ENV"], DEFAULTS["SECURITYKIT_ENV"])
-        lvl = logger.error if env_mode == "production" else logger.warning
-        lvl(
-            "Incomplete %s config (missing: %s). AUTO_BENCHMARK=0 → benchmark skipped. "
-            "Provide env file or enable AUTO_BENCHMARK=1.",
-            variant,
-            ", ".join(missing),
-        )
-        return
-
-    export_path = Path(".env.local")
-    with _file_lock(export_path):
-        # Double-check after acquiring lock
-        if export_path.exists():
-            load_dotenv(export_path, override=True)
-            if all(k in os.environ for k in required_keys):
-                logger.info(
-                    "Another process completed bootstrap for %s while waiting on lock. Skipping.",
-                    variant,
-                )
-                return
-
-        target_ms = int(os.getenv(ENV_VARS["AUTO_BENCHMARK_TARGET_MS"], DEFAULTS["AUTO_BENCHMARK_TARGET_MS"]))
-        try:
-            result = run_benchmark(variant, target_ms=target_ms)
-        except Exception as e:
-            logger.error("Benchmark failed for %s: %s. Aborting bootstrap.", variant, e)
-            return
-
-        # Start with benchmarked values
-        env_config = result["best"]
-
-        # Ensure completeness: merge in policy defaults
-        defaults = policy_cls().to_dict()
-        for field, value in defaults.items():
-            key = f"{variant.upper()}_{field.upper()}"
-            env_config.setdefault(key, str(value))
-
-        env_config["GENERATED_BY"] = f"securitykit-bench v{__version__}"
-        env_config["GENERATED_SHA256"] = _sha256_of(env_config)
-
-        export_env(env_config, export_path)
-        os.environ.update(env_config)
-        logger.info(
-            "Generated %s config → %s (target=%d ms)", variant, export_path, target_ms
-        )
+    assert "Unknown HASH_VARIANT" in caplog.text

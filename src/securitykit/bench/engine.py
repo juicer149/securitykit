@@ -2,21 +2,37 @@
 import time
 import statistics
 from typing import Any, Sequence
+from dataclasses import dataclass, field
 
 from securitykit.core.algorithm import Algorithm
 
 
+@dataclass(frozen=True)
 class BenchmarkResult:
-    def __init__(self, policy: Any, times: Sequence[float], target_ms: int):
-        self.policy = policy
-        self.times = list(times)
-        self.median = statistics.median(times)
-        self.min = min(times)
-        self.max = max(times)
-        self.stddev = statistics.pstdev(times) if len(times) > 1 else 0.0
-        self.delta = ((self.median - target_ms) / target_ms) * 100
+    """Immutable container for benchmark results of one policy config."""
 
-    def __repr__(self):
+    policy: Any
+    times: list[float]
+    target_ms: int
+
+    median: float = field(init=False)
+    min: float = field(init=False)
+    max: float = field(init=False)
+    stddev: float = field(init=False)
+    delta: float = field(init=False)
+
+    def __post_init__(self):
+        object.__setattr__(self, "median", statistics.median(self.times))
+        object.__setattr__(self, "min", min(self.times))
+        object.__setattr__(self, "max", max(self.times))
+        object.__setattr__(self, "stddev", statistics.pstdev(self.times) if len(self.times) > 1 else 0.0)
+        object.__setattr__(
+            self,
+            "delta",
+            ((self.median - self.target_ms) / self.target_ms) * 100 if self.target_ms else 0.0,
+        )
+
+    def __repr__(self) -> str:
         return f"<BenchmarkResult {self.policy} median={self.median:.2f}ms Δ={self.delta:+.1f}%>"
 
 
@@ -38,3 +54,4 @@ class BenchmarkEngine:
         self._time_once(policy)
         times = [self._time_once(policy) for _ in range(self.repeats)]
         return BenchmarkResult(policy, times, target_ms)
+

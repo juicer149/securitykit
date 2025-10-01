@@ -1,3 +1,4 @@
+# securitykit/bootstrap.py
 import os
 import hashlib
 from pathlib import Path
@@ -13,7 +14,9 @@ from dotenv import load_dotenv
 
 from securitykit.logging_config import logger
 from securitykit.core.policy_registry import get_policy_class
-from securitykit.bench.bench import run_benchmark, export_env
+from securitykit.bench.config import BenchmarkConfig
+from securitykit.bench.runner import BenchmarkRunner
+from securitykit.bench.utils import export_env
 from securitykit.version import __version__
 from securitykit.config import ENV_VARS, DEFAULTS
 
@@ -101,18 +104,20 @@ def ensure_env_config():
     present = [k for k in required_keys if k in os.environ]
     missing = [k for k in required_keys if k not in os.environ]
 
+    # === Case 1: already complete ===
     if not missing:
         logger.debug("All hashing parameters present for %s.", variant)
         return
 
-    if present and missing:
-        logger.warning(
-            "Partial %s config detected (%d present, %d missing). Regenerating full set.",
-            variant,
-            len(present),
-            len(missing),
-        )
+    # === Case 2: incomplete (either partial or none) ===
+    logger.warning(
+        "%s config incomplete (%d present, %d missing). Regenerating full set.",
+        variant,
+        len(present),
+        len(missing),
+    )
 
+    # Check AUTO_BENCHMARK
     if not _bool_env(ENV_VARS["AUTO_BENCHMARK"], DEFAULTS["AUTO_BENCHMARK"]):
         env_mode = os.getenv(ENV_VARS["SECURITYKIT_ENV"], DEFAULTS["SECURITYKIT_ENV"])
         lvl = logger.error if env_mode == "production" else logger.warning
@@ -124,6 +129,7 @@ def ensure_env_config():
         )
         return
 
+    # === Benchmark and export ===
     export_path = Path(".env.local")
     with _file_lock(export_path):
         # Double-check after acquiring lock
@@ -136,9 +142,16 @@ def ensure_env_config():
                 )
                 return
 
-        target_ms = int(os.getenv(ENV_VARS["AUTO_BENCHMARK_TARGET_MS"], DEFAULTS["AUTO_BENCHMARK_TARGET_MS"]))
+        target_ms = int(
+            os.getenv(
+                ENV_VARS["AUTO_BENCHMARK_TARGET_MS"],
+                DEFAULTS["AUTO_BENCHMARK_TARGET_MS"],
+            )
+        )
         try:
-            result = run_benchmark(variant, target_ms=target_ms)
+            config = BenchmarkConfig(variant=variant, target_ms=target_ms)
+            runner = BenchmarkRunner(config)
+            result = runner.run()
         except Exception as e:
             logger.error("Benchmark failed for %s: %s. Aborting bootstrap.", variant, e)
             return

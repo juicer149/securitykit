@@ -1,14 +1,19 @@
 # securitykit/bench/analyzer.py
 from typing import Sequence
 
+from securitykit.core.interfaces import BenchValue
 from .engine import BenchmarkResult
 
 
 class ResultAnalyzer:
-    def __init__(self, schema: dict[str, list]):
+    def __init__(self, schema: dict[str, list[BenchValue]]):
         self.schema = schema
 
-    def filter_near(self, results: Sequence[BenchmarkResult], target_ms: int, tolerance: float) -> list[BenchmarkResult]:
+    def filter_near(
+            self, results: Sequence[BenchmarkResult], 
+            target_ms: int, tolerance: float
+        ) -> list[BenchmarkResult]:
+
         lower, upper = target_ms * (1 - tolerance), target_ms * (1 + tolerance)
         return [r for r in results if lower <= r.median <= upper]
 

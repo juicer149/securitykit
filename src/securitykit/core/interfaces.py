@@ -1,6 +1,7 @@
 # securitykit/core/interfaces.py
-from typing import Protocol, runtime_checkable, Any, ClassVar
+from typing import Protocol, runtime_checkable, Any, ClassVar, Union
 
+BenchValue = Union[int, float, str, bool]
 
 
 @runtime_checkable
@@ -22,6 +23,6 @@ class PolicyProtocol(Protocol):
     Typically implemented as a dataclass.
     """
 
-    BENCH_SCHEMA: ClassVar[dict[str, list[int]]] 
+    BENCH_SCHEMA: ClassVar[dict[str, list[BenchValue]]]
 
     def to_dict(self) -> dict[str, Any]: ...

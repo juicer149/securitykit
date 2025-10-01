@@ -1,31 +1,34 @@
 # securitykit/core/policy_registry.py
-import logging
-
 from securitykit import logger
-from securitykit.exceptions import UnknownPolicyError, RegistryConflictError
+from securitykit.core.registry import Registry
+from securitykit.exceptions import UnknownPolicyError
+from securitykit.core.interfaces import PolicyProtocol
 
 
-_POLICY_REGISTRY: dict[str, type] = {}
+def _validate_policy(cls: type) -> None:
+    """
+    Extra krav för policies:
+    - Måste ha en BENCH_SCHEMA (även om tom dict).
+    """
+    # kanske även göra en egen exception här?
+    if not hasattr(cls, "BENCH_SCHEMA"):
+        raise TypeError(f"Policy {cls.__name__} must define BENCH_SCHEMA.")
+
+
+# Skapa registry för policies
+_policy_registry = Registry("policy", validator=_validate_policy)
 
 
 def register_policy(name: str):
-    """Decorator to register a policy class in the global registry."""
-    def decorator(cls: type) -> type:
-        key = name.lower()
-        if key in _POLICY_REGISTRY:
-            raise RegistryConflictError(f"Policy '{key}' is already registered.")
-        _POLICY_REGISTRY[key] = cls
-        logger.debug("Registered policy: %s -> %s", key, cls.__name__)
-        return cls
-    return decorator
+    return _policy_registry.register(name)
 
 
-def get_policy_class(name: str) -> type:
-    key = name.lower()
-    if key not in _POLICY_REGISTRY:
-        raise UnknownPolicyError(f"Unsupported policy: {name}")
-    return _POLICY_REGISTRY[key]
+def get_policy_class(name: str) -> type[PolicyProtocol]:
+    try:
+        return _policy_registry.get(name)
+    except KeyError as e:
+        raise UnknownPolicyError(str(e))
 
 
 def list_policies() -> list[str]:
-    return list(_POLICY_REGISTRY.keys())
+    return _policy_registry.list()
