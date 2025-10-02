@@ -1,50 +1,53 @@
-# tests/test_password_policy.py
 import pytest
-from securitykit.policies.password import (
-    PasswordPolicy,
-    PASSWORD_MIN_LENGTH,
-    PASSWORD_MAX_LENGTH,
-    PASSWORD_RECOMMENDED_MIN_LENGTH,
-)
+from securitykit.password.policy import PasswordPolicy
 from securitykit.exceptions import InvalidPolicyConfig
 
 
-def test_password_policy_defaults_warns_below_recommended(caplog):
-    caplog.set_level("WARNING")
-    policy = PasswordPolicy()  # default min_length = 8
+def test_policy_defaults_ok(caplog):
+    policy = PasswordPolicy()
     assert policy.min_length == 8
-    assert any(str(PASSWORD_RECOMMENDED_MIN_LENGTH) in m for m in caplog.messages)
+    d = policy.to_dict()
+    assert d["min_length"] == 8
+    # Default min_length (8) < recommended (12) ⇒ warning
+    assert any("below recommended minimum" in r.message for r in caplog.records)
 
 
-def test_password_policy_rejects_too_short_min_length():
-    with pytest.raises(InvalidPolicyConfig):
-        PasswordPolicy(min_length=PASSWORD_MIN_LENGTH - 1)
+def test_policy_custom_min_length_triggers_warning_low(caplog):
+    caplog.clear()
+    policy = PasswordPolicy(min_length=5)
+    assert policy.min_length == 5
+    assert any("below recommended minimum" in r.message for r in caplog.records)
 
 
-def test_password_policy_rejects_too_high_min_length():
-    with pytest.raises(InvalidPolicyConfig):
-        PasswordPolicy(min_length=PASSWORD_MAX_LENGTH + 1)
+def test_policy_custom_min_length_unusually_high_warning(caplog):
+    caplog.clear()
+    # > PASSWORD_UNUSUALLY_HIGH_MIN_LENGTH (128)
+    policy = PasswordPolicy(min_length=129)
+    assert policy.min_length == 129
+    assert any("unusually high" in r.message for r in caplog.records)
 
 
-def test_password_policy_accepts_normal_range():
-    policy = PasswordPolicy(min_length=16)
-    assert policy.min_length == 16
+def test_policy_min_length_too_small_raises():
+    with pytest.raises(InvalidPolicyConfig) as exc:
+        PasswordPolicy(min_length=0)
+    assert "at least" in str(exc.value)
 
 
-def test_password_policy_validation_too_short():
-    policy = PasswordPolicy(min_length=8, require_upper=False, require_special=False)
-    with pytest.raises(InvalidPolicyConfig):
-        policy.validate("short")
+def test_policy_min_length_too_large_raises():
+    with pytest.raises(InvalidPolicyConfig) as exc:
+        PasswordPolicy(min_length=PasswordPolicy.PASSWORD_MAX_LENGTH + 1)
+    assert "must be <=" in str(exc.value)
 
 
-def test_password_policy_validation_too_long():
-    policy = PasswordPolicy(min_length=8, require_upper=False, require_special=False)
-    too_long = "x" * (PASSWORD_MAX_LENGTH + 1)
-    with pytest.raises(InvalidPolicyConfig):
-        policy.validate(too_long)
-
-
-@pytest.mark.parametrize("password", ["ValidPass123!", "AnotherOne9$"])
-def test_password_policy_validation_success(password):
-    policy = PasswordPolicy(min_length=8)
-    policy.validate(password)
+def test_policy_to_dict_structure():
+    policy = PasswordPolicy(min_length=14, require_upper=False)
+    d = policy.to_dict()
+    assert d["min_length"] == 14
+    assert d["require_upper"] is False
+    assert set(d.keys()) == {
+        "min_length",
+        "require_upper",
+        "require_lower",
+        "require_digit",
+        "require_special",
+    }

@@ -1,34 +1,17 @@
+# tests/test_algorithm.py
 import pytest
-from securitykit.core.algorithm import Algorithm
+
+from securitykit.hashing.algorithm import Algorithm
 from securitykit.exceptions import HashingError, VerificationError
 
-
-class DummyImpl:
-    """Minimal fake AlgorithmProtocol implementation for testing."""
-
-    def __init__(self, policy=None, **kwargs):
-        self.policy = policy
-        self.raise_in = None  # which method to raise in
-
-    def hash(self, password: str) -> str:
-        if self.raise_in == "hash":
-            raise RuntimeError("hash failure")
-        return f"HASHED:{password}"
-
-    def verify(self, stored_hash: str, password: str) -> bool:
-        if self.raise_in == "verify":
-            raise RuntimeError("verify failure")
-        return stored_hash == f"HASHED:{password}"
-
-    def needs_rehash(self, stored_hash: str) -> bool:
-        if self.raise_in == "needs_rehash":
-            raise RuntimeError("rehash failure")
-        return stored_hash.startswith("OLD:")
+from common.dummy_impls import DummyImpl, NoRehash, BadAlgo, AlgorithmLike
 
 
 def test_with_pepper_and_without(monkeypatch):
-    # Patch registry so Algorithm always returns DummyImpl
-    monkeypatch.setattr("securitykit.core.algorithm.get_algorithm_class", lambda variant: DummyImpl)
+    monkeypatch.setattr(
+        "securitykit.hashing.algorithm.get_algorithm_class",
+        lambda variant: DummyImpl,  # type: ignore[return-value]
+    )
 
     algo = Algorithm("argon2", pepper="PEP")
     assert algo._with_pepper("pw") == "pwPEP"
@@ -38,16 +21,22 @@ def test_with_pepper_and_without(monkeypatch):
 
 
 def test_hash_success_and_failure(monkeypatch):
-    monkeypatch.setattr("securitykit.core.algorithm.get_algorithm_class", lambda v: DummyImpl)
+    monkeypatch.setattr(
+        "securitykit.hashing.algorithm.get_algorithm_class",
+        lambda v: DummyImpl,  # type: ignore[return-value]
+    )
 
-    # Success
+    # Success case
     algo = Algorithm("argon2")
     assert algo.hash("pw") == "HASHED:pw"
 
-    # Failure path raises HashingError
-    failing_impl = DummyImpl()
-    failing_impl.raise_in = "hash"
-    monkeypatch.setattr("securitykit.core.algorithm.get_algorithm_class", lambda v: lambda *a, **k: failing_impl)
+    # Failure case
+    failing_impl: AlgorithmLike = DummyImpl()
+    failing_impl.raise_in = "hash"  # type: ignore[attr-defined]
+    monkeypatch.setattr(
+        "securitykit.hashing.algorithm.get_algorithm_class",
+        lambda v: lambda *a, **k: failing_impl,
+    )
 
     algo_fail = Algorithm("argon2")
     with pytest.raises(HashingError):
@@ -55,7 +44,10 @@ def test_hash_success_and_failure(monkeypatch):
 
 
 def test_verify_success_and_failure(monkeypatch):
-    monkeypatch.setattr("securitykit.core.algorithm.get_algorithm_class", lambda v: DummyImpl)
+    monkeypatch.setattr(
+        "securitykit.hashing.algorithm.get_algorithm_class",
+        lambda v: DummyImpl,  # type: ignore[return-value]
+    )
 
     algo = Algorithm("argon2")
     hashed = algo.hash("pw")
@@ -63,9 +55,12 @@ def test_verify_success_and_failure(monkeypatch):
     assert algo.verify(hashed, "wrong") is False
 
     # Force failure path
-    failing_impl = DummyImpl()
-    failing_impl.raise_in = "verify"
-    monkeypatch.setattr("securitykit.core.algorithm.get_algorithm_class", lambda v: lambda *a, **k: failing_impl)
+    failing_impl: AlgorithmLike = DummyImpl()
+    failing_impl.raise_in = "verify"  # type: ignore[attr-defined]
+    monkeypatch.setattr(
+        "securitykit.hashing.algorithm.get_algorithm_class",
+        lambda v: lambda *a, **k: failing_impl,
+    )
 
     algo_fail = Algorithm("argon2")
     with pytest.raises(VerificationError):
@@ -73,26 +68,30 @@ def test_verify_success_and_failure(monkeypatch):
 
 
 def test_needs_rehash_success_and_failure(monkeypatch, caplog):
-    monkeypatch.setattr("securitykit.core.algorithm.get_algorithm_class", lambda v: DummyImpl)
+    monkeypatch.setattr(
+        "securitykit.hashing.algorithm.get_algorithm_class",
+        lambda v: DummyImpl,  # type: ignore[return-value]
+    )
 
     algo = Algorithm("argon2")
     assert algo.needs_rehash("OLD:123") is True
     assert algo.needs_rehash("HASHED:123") is False
 
-    # Impl without needs_rehash method → returns False
-    class NoRehash:
-        def __init__(self, *a, **kw): pass
-        def hash(self, pw): return "X"
-        def verify(self, h, pw): return True
-
-    monkeypatch.setattr("securitykit.core.algorithm.get_algorithm_class", lambda v: NoRehash)
+    # Impl without needs_rehash method
+    monkeypatch.setattr(
+        "securitykit.hashing.algorithm.get_algorithm_class",
+        lambda v: NoRehash,
+    )
     algo2 = Algorithm("argon2")
     assert algo2.needs_rehash("anything") is False
 
     # Impl that raises in needs_rehash
-    failing_impl = DummyImpl()
-    failing_impl.raise_in = "needs_rehash"
-    monkeypatch.setattr("securitykit.core.algorithm.get_algorithm_class", lambda v: lambda *a, **k: failing_impl)
+    failing_impl: AlgorithmLike = DummyImpl()
+    failing_impl.raise_in = "needs_rehash"  # type: ignore[attr-defined]
+    monkeypatch.setattr(
+        "securitykit.hashing.algorithm.get_algorithm_class",
+        lambda v: lambda *a, **k: failing_impl,
+    )
 
     algo_fail = Algorithm("argon2")
     caplog.set_level("ERROR")
@@ -102,13 +101,17 @@ def test_needs_rehash_success_and_failure(monkeypatch, caplog):
 
 def test_get_policy_dict_with_and_without_policy(monkeypatch):
     class Policy:
-        def to_dict(self): return {"foo": 123}
+        def to_dict(self):
+            return {"foo": 123}
 
     class Impl(DummyImpl):
         def __init__(self, policy=None, **kwargs):
             super().__init__(policy)
 
-    monkeypatch.setattr("securitykit.core.algorithm.get_algorithm_class", lambda v: Impl)
+    monkeypatch.setattr(
+        "securitykit.hashing.algorithm.get_algorithm_class",
+        lambda v: Impl,
+    )
 
     # With policy
     algo = Algorithm("argon2", policy=Policy())
@@ -120,11 +123,14 @@ def test_get_policy_dict_with_and_without_policy(monkeypatch):
     d2 = algo2.get_policy_dict()
     assert d2 == {}
 
+
 def test_algorithm_callable(monkeypatch):
-    monkeypatch.setattr("securitykit.core.algorithm.get_algorithm_class", lambda v: DummyImpl)
+    monkeypatch.setattr(
+        "securitykit.hashing.algorithm.get_algorithm_class",
+        lambda v: DummyImpl,  # type: ignore[return-value]
+    )
 
     algo = Algorithm("argon2")
-    # __call__ ska vara samma som .hash()
+    # __call__ should equal .hash()
     assert algo("pw") == algo.hash("pw")
     assert algo("pw") == "HASHED:pw"
-
