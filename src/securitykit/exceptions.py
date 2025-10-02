@@ -2,17 +2,16 @@
 Custom exception hierarchy for SecurityKit.
 """
 
-
 class SecurityKitError(Exception):
     """Base class for all SecurityKit exceptions."""
 
 
-# --- Config / Policies ---
+# --- Configuration / Policies ---
 class ConfigValidationError(SecurityKitError):
     """General configuration validation failure."""
 
 
-class InvalidPolicyError(SecurityKitError):
+class InvalidPolicyError(ConfigValidationError):
     """A policy class is incorrectly implemented or registered."""
 
 
@@ -25,12 +24,16 @@ class UnknownPolicyError(SecurityKitError):
 
 
 # --- Algorithms ---
-class UnknownAlgorithmError(SecurityKitError):
-    """Tried to use an algorithm not present in registry."""
-
-
 class AlgorithmError(SecurityKitError):
     """General error in an algorithm implementation."""
+
+
+class InvalidAlgorithmError(AlgorithmError):
+    """An algorithm class is incorrectly implemented or registered."""
+
+
+class UnknownAlgorithmError(AlgorithmError):
+    """Tried to use an algorithm not present in registry."""
 
 
 class HashingError(AlgorithmError):

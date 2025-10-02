@@ -1,7 +1,7 @@
 from dataclasses import dataclass, field
 from securitykit.config import DEFAULTS
-from securitykit.core.policy_registry import get_policy_class
-from securitykit.core.interfaces import BenchValue
+from securitykit.hashing.policy_registry import get_policy_class
+from securitykit.hashing.interfaces import BenchValue
 from securitykit.bench.exceptions import MissingBenchSchemaError
 
 # Bench-specific defaults

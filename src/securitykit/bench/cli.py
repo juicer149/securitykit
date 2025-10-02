@@ -1,6 +1,5 @@
 # securitykit/bench/cli.py
 import click
-from pathlib import Path
 
 from securitykit.config import DEFAULTS
 from securitykit.bench.config import (
@@ -11,8 +10,7 @@ from securitykit.bench.config import (
 )
 from securitykit.bench.runner import BenchmarkRunner
 from securitykit.bench.engine import BenchmarkResult
-from securitykit.bench.utils import export_env   # ✅ importera här
-from securitykit.logging_config import logger
+from securitykit.utils.env import export_env
 
 
 def _format_policy_line(policy_obj, schema_keys, ms=None, delta_pct=None) -> str:

@@ -3,7 +3,7 @@ from typing import Any
 from tqdm import tqdm
 import logging
 
-from securitykit.core.interfaces import BenchValue
+from securitykit.hashing.interfaces import BenchValue
 from securitykit.bench.engine import BenchmarkEngine, BenchmarkResult
 from securitykit.bench.analyzer import ResultAnalyzer
 from securitykit.bench.config import BenchmarkConfig

@@ -11,11 +11,17 @@ from typing import Any, Iterable
 import click
 from tqdm import tqdm
 
-from securitykit.core.policy_registry import get_policy_class
-from securitykit.core.algorithm import Algorithm
+from securitykit.hashing.policy_registry import get_policy_class
+from securitykit.hashing.algorithm import Algorithm
 from securitykit.logging_config import logger
 from securitykit.bench.engine import BenchmarkResult
 from securitykit.bench.analyzer import ResultAnalyzer
+from securitykit.bench.config import (
+    DEFAULT_TARGET_MS,
+    DEFAULT_TOLERANCE,
+    DEFAULT_ROUNDS,
+)
+from securitykit.config import DEFAULTS, ENV_VARS
 
 # Silence the benign "found in sys.modules" RuntimeWarning when running as a module.
 warnings.filterwarnings(
@@ -25,7 +31,7 @@ warnings.filterwarnings(
 )
 
 
-def _measure(policy: Any, hasher: Algorithm, rounds: int = 3) -> float:
+def _measure(policy: Any, hasher: Algorithm, rounds: int = DEFAULT_ROUNDS) -> float:
     """Measure average hash time (ms) for a given policy."""
     timings = []
     for _ in range(rounds):
@@ -67,9 +73,9 @@ def _format_policy_line(
 
 def run_benchmark(
     variant: str,
-    target_ms: int = 250,
-    tolerance: float = 0.10,
-    rounds: int = 3,
+    target_ms: int = DEFAULT_TARGET_MS,
+    tolerance: float = DEFAULT_TOLERANCE,
+    rounds: int = DEFAULT_ROUNDS,
 ) -> dict[str, Any]:
     """
     Run a benchmark for the given variant.
@@ -126,7 +132,7 @@ def run_benchmark(
         )
 
         # Build .env-ready config (all values as str)
-        env_config: dict[str, str] = {"HASH_VARIANT": str(variant)}
+        env_config: dict[str, str] = {ENV_VARS["HASH_VARIANT"]: str(variant)}
         env_config.update(
             {f"{variant.upper()}_{k.upper()}": str(v) for k, v in best_combo.items()}
         )
@@ -150,10 +156,10 @@ def export_env(config: dict[str, str], filepath: str | Path) -> None:
 
 
 @click.command()
-@click.option("--variant", default="argon2", help="Hash variant to benchmark.")
-@click.option("--target-ms", default=250, help="Target hashing time in ms.")
-@click.option("--tolerance", default=0.10, help="Tolerance fraction (default ±10%).")
-@click.option("--rounds", default=3, help="Timing rounds averaged per combo.")
+@click.option("--variant", default=DEFAULTS["HASH_VARIANT"], help="Hash variant to benchmark.")
+@click.option("--target-ms", default=DEFAULT_TARGET_MS, help="Target hashing time in ms.")
+@click.option("--tolerance", default=DEFAULT_TOLERANCE, help="Tolerance fraction.")
+@click.option("--rounds", default=DEFAULT_ROUNDS, help="Timing rounds averaged per combo.")
 @click.option("--export-file", type=click.Path(), help="Export best config to a .env file.")
 def cli(variant: str, target_ms: int, tolerance: float, rounds: int, export_file: str | None):
     """Run a benchmark for a given hash variant and optionally export the config."""

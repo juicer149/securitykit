@@ -13,17 +13,36 @@ except ImportError:
 from dotenv import load_dotenv
 
 from securitykit.logging_config import logger
-from securitykit.core.policy_registry import get_policy_class
+from securitykit.hashing.policy_registry import get_policy_class
 from securitykit.bench.config import BenchmarkConfig
 from securitykit.bench.runner import BenchmarkRunner
-from securitykit.bench.utils import export_env
+from securitykit.utils.env import export_env
 from securitykit.version import __version__
-from securitykit.config import ENV_VARS, DEFAULTS
+from securitykit import config as sk_config
 
 
-# -------------------
+# --------------------------------------------------
+# Centralized env access helpers
+# --------------------------------------------------
+
+def _env(name: str) -> str:
+    """
+    Return current value for logical config key (ENV_VARS mapping),
+    falling back to DEFAULTS when not set.
+    """
+    return os.getenv(sk_config.ENV_VARS[name], sk_config.DEFAULTS.get(name, ""))
+
+
+def _bool_flag(name: str) -> bool:
+    """
+    Boolean interpretation (1/true/yes/on).
+    """
+    return _env(name).lower() in ("1", "true", "yes", "on")
+
+
+# --------------------------------------------------
 # Helpers
-# -------------------
+# --------------------------------------------------
 @contextmanager
 def _file_lock(path: Path):
     if not HAVE_PORTALOCKER:
@@ -71,26 +90,22 @@ def _validate_generated_block(path: Path):
         )
 
 
-def _bool_env(name: str, default: str = "0") -> bool:
-    return os.getenv(name, default).lower() in ("1", "true", "yes", "on")
-
-
-# -------------------
+# --------------------------------------------------
 # Auto-benchmark bootstrap
-# -------------------
+# --------------------------------------------------
 def ensure_env_config():
-    if _bool_env(ENV_VARS["SECURITYKIT_DISABLE_BOOTSTRAP"]):
+    if _bool_flag("SECURITYKIT_DISABLE_BOOTSTRAP"):
         logger.info("Bootstrap disabled via SECURITYKIT_DISABLE_BOOTSTRAP=1")
         return
 
-    # Load layering
+    # Layer .env then .env.local
     load_dotenv(Path(".env"), override=False)
     load_dotenv(Path(".env.local"), override=True)
 
     # Validate integrity if .env.local exists
     _validate_generated_block(Path(".env.local"))
 
-    variant = os.getenv(ENV_VARS["HASH_VARIANT"], DEFAULTS["HASH_VARIANT"]).lower()
+    variant = _env("HASH_VARIANT").lower() or sk_config.DEFAULTS["HASH_VARIANT"]
     try:
         policy_cls = get_policy_class(variant)
     except Exception as e:
@@ -104,12 +119,12 @@ def ensure_env_config():
     present = [k for k in required_keys if k in os.environ]
     missing = [k for k in required_keys if k not in os.environ]
 
-    # === Case 1: already complete ===
+    # Case 1: everything already present
     if not missing:
         logger.debug("All hashing parameters present for %s.", variant)
         return
 
-    # === Case 2: incomplete (either partial or none) ===
+    # Incomplete
     logger.warning(
         "%s config incomplete (%d present, %d missing). Regenerating full set.",
         variant,
@@ -118,8 +133,8 @@ def ensure_env_config():
     )
 
     # Check AUTO_BENCHMARK
-    if not _bool_env(ENV_VARS["AUTO_BENCHMARK"], DEFAULTS["AUTO_BENCHMARK"]):
-        env_mode = os.getenv(ENV_VARS["SECURITYKIT_ENV"], DEFAULTS["SECURITYKIT_ENV"])
+    if not _bool_flag("AUTO_BENCHMARK"):
+        env_mode = _env("SECURITYKIT_ENV") or sk_config.DEFAULTS["SECURITYKIT_ENV"]
         lvl = logger.error if env_mode == "production" else logger.warning
         lvl(
             "Incomplete %s config (missing: %s). AUTO_BENCHMARK=0 → benchmark skipped. "
@@ -129,10 +144,10 @@ def ensure_env_config():
         )
         return
 
-    # === Benchmark and export ===
+    # Benchmark and export
     export_path = Path(".env.local")
     with _file_lock(export_path):
-        # Double-check after acquiring lock
+        # Re-check after acquiring lock
         if export_path.exists():
             load_dotenv(export_path, override=True)
             if all(k in os.environ for k in required_keys):
@@ -144,8 +159,8 @@ def ensure_env_config():
 
         target_ms = int(
             os.getenv(
-                ENV_VARS["AUTO_BENCHMARK_TARGET_MS"],
-                DEFAULTS["AUTO_BENCHMARK_TARGET_MS"],
+                sk_config.ENV_VARS["AUTO_BENCHMARK_TARGET_MS"],
+                sk_config.DEFAULTS["AUTO_BENCHMARK_TARGET_MS"],
             )
         )
         try:
@@ -159,7 +174,7 @@ def ensure_env_config():
         # Start with benchmarked values
         env_config = result["best"]
 
-        # Ensure completeness: merge in policy defaults
+        # Merge policy defaults to ensure completeness
         defaults = policy_cls().to_dict()
         for field, value in defaults.items():
             key = f"{variant.upper()}_{field.upper()}"

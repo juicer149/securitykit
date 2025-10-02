@@ -1,10 +1,10 @@
 # securitykit/bench/engine.py
 import time
 import statistics
-from typing import Any, Sequence
+from typing import Any
 from dataclasses import dataclass, field
 
-from securitykit.core.algorithm import Algorithm
+from securitykit.hashing.algorithm import Algorithm
 
 
 @dataclass(frozen=True)
@@ -54,4 +54,3 @@ class BenchmarkEngine:
         self._time_once(policy)
         times = [self._time_once(policy) for _ in range(self.repeats)]
         return BenchmarkResult(policy, times, target_ms)
-
