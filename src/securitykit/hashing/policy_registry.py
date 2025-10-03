@@ -1,37 +1,53 @@
-from securitykit.hashing.registry import Registry
-from securitykit.hashing.interfaces import PolicyProtocol
-from securitykit.exceptions import UnknownPolicyError  # Om denna finns, annars skapa/justera.
+from __future__ import annotations
+from typing import Dict, Type
 
-_policy_registry = Registry[PolicyProtocol]("policy")
-_registered_policy_snapshots: list[tuple[str, type[PolicyProtocol]]] = []
+from securitykit.exceptions import RegistryConflictError, UnknownPolicyError
+
+_POLICIES: Dict[str, Type] = {}
+_SNAPSHOTS: Dict[str, Type] = {}
 
 
 def register_policy(name: str):
-    """
-    Decorator to register a policy under a given name.
-    Also records a snapshot of the class for later restoration.
-    """
-    def decorator(cls: type[PolicyProtocol]) -> type[PolicyProtocol]:
-        cls2 = _policy_registry.register(name)(cls)
-        lowered = name.lower()
-        if not any(k == lowered and c is cls2 for k, c in _registered_policy_snapshots):
-            _registered_policy_snapshots.append((lowered, cls2))
-        return cls2
+    norm = name.lower()
+
+    def decorator(cls: Type):
+        existing = _POLICIES.get(norm)
+        if existing is not None and existing is not cls:
+            raise RegistryConflictError(
+                f"Policy variant '{name}' already registered with {existing.__name__}"
+            )
+        _POLICIES[norm] = cls
+        if norm not in _SNAPSHOTS:
+            _SNAPSHOTS[norm] = cls
+        return cls
+
     return decorator
 
 
-def restore_from_snapshots() -> None:
-    _policy_registry._registry.clear()
-    for key, cls in _registered_policy_snapshots:
-        _policy_registry._registry[key] = cls
-
-
-def get_policy_class(name: str) -> type[PolicyProtocol]:
-    try:
-        return _policy_registry.get(name)
-    except KeyError as e:
-        raise UnknownPolicyError(str(e)) from e
+def get_policy_class(name: str) -> Type:
+    cls = _POLICIES.get(name.lower())
+    if cls is None:
+        raise UnknownPolicyError(f"Unknown policy variant '{name}'")
+    return cls
 
 
 def list_policies() -> list[str]:
-    return _policy_registry.list()
+    return sorted(_POLICIES.keys())
+
+
+def list_policy_classes() -> dict[str, Type]:
+    return dict(_POLICIES)
+
+
+def restore_from_snapshots() -> None:
+    _POLICIES.clear()
+    _POLICIES.update(_SNAPSHOTS)
+
+
+__all__ = [
+    "register_policy",
+    "get_policy_class",
+    "list_policies",
+    "list_policy_classes",
+    "restore_from_snapshots",
+]

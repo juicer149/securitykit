@@ -1,320 +1,435 @@
 # SecurityKit Hashing
 
-The `securitykit.hashing` package provides the core abstractions for password hashing:
-a uniform `Algorithm` façade, policy dataclasses with validation and (optionally) benchmark
-schemas, and registry / factory utilities for discovering and constructing implementations.
+> Modern, extensible, test‑friendly password hashing layer with strongly
+> validated policies, pluggable algorithms, benchmarking support, and
+> configuration‑driven construction.
+
+This document describes the current architecture:
+
+- Concrete policy dataclasses (no runtime inheritance hierarchies)
+- Simplified registries storing raw classes (`type`)
+- Structural typing only (no fragile generics)
+- Centralized pepper subsystem (strategy + config driven; no `pepper=` arg)
+- Algorithm façade applies pepper + delegates to `hash_raw` / `verify_raw`
+- Dynamic test parametrization (registry‑driven, not module‑decorator duplication)
+- Separation of algorithm logic from configuration/bootstrap code
 
 ---
 
 ## Contents
 
-1. Goals
-2. Core Concepts
-3. Public Modules
-4. Quick Start
-5. Configuration Integration
-6. Rehashing Semantics
-7. Pepper Support
-8. Benchmark Interoperability
-9. Extending (Algorithms / Policies)
-10. Factory Usage Patterns
-11. Error Handling
-12. Testing Guidance
-13. Best Practices
-14. Roadmap
+1. Goals & Non‑Goals  
+2. Architecture Overview  
+3. Core Concepts  
+4. Public Modules  
+5. Quick Start  
+6. Configuration & Environment Keys  
+7. Rehash Semantics  
+8. Pepper Subsystem  
+9. Benchmark Interoperability  
+10. Extending (Policies & Algorithms)  
+11. Error & Exception Model  
+12. Testing Strategy & Patterns  
+13. Best Practices & Security Notes  
+14. Migration / “What Changed”  
+15. Roadmap  
+16. Appendix: Minimal Manual Flow  
 
 ---
 
-## 1. Goals
+## 1. Goals & Non‑Goals
 
-| Goal              | Description                                                  |
-|-------------------|--------------------------------------------------------------|
-| Uniform Interface | One `Algorithm` object exposes `hash`, `verify`, `needs_rehash` |
-| Safety            | Policy validation enforces numeric bounds and consistency   |
-| Extensibility     | New algorithms/policies registered via decorators           |
-| Determinism       | Construction controlled entirely by explicit config         |
-| Benchmark Ready   | Policies can declare `BENCH_SCHEMA` for tuning              |
-| Separation        | Algorithms encapsulate cryptographic operations; policies define parameters |
+| Goal | Description |
+|------|-------------|
+| Uniform Interface | One façade (`Algorithm`) exposing `hash`, `verify`, `needs_rehash` |
+| Explicit Configuration | Deterministic construction via env/mapping |
+| Safety | Policy dataclasses validate bounds in `__post_init__` |
+| Extensibility | New algorithms / policies via decorators |
+| Benchmark Ready | Optional `BENCH_SCHEMA` enumerates tuning space |
+| Structural Typing | Avoid inheritance complexity |
+| Testability | Dynamic registry‑driven parametrization |
+| Runtime Clarity | Registries store `type` only |
+| Centralized Pepper | Single subsystem; zero duplication in implementations |
 
----
+**Non‑Goals**
 
-## 2. Core Concepts
-
-| Concept    | Description |
-|------------|-------------|
-| Algorithm  | High-level façade created from a variant + policy (and optional pepper) |
-| Policy     | Dataclass capturing parameter set; validates in `__post_init__`; may define `BENCH_SCHEMA` |
-| Registry   | Maps variant name → algorithm class (`algorithm_registry`) or policy class (`policy_registry`) |
-| Factory    | Builds a policy + algorithm from configuration keys (e.g. `HASH_VARIANT=argon2`, `ARGON2_TIME_COST=3`) |
-| BENCH_SCHEMA | Dict[str, list[BenchValue]] enumerating dimensions for benchmarking/tuning |
-| Pepper     | Optional secret value appended (or otherwise incorporated) before hashing |
+- A universal hash decoder (only what's needed for rehash decisions)
+- Forcing environment as the only config source
+- Hiding underlying algorithm parameters
+- Re‑introducing per‑algorithm pepper behavior
 
 ---
 
-## 3. Public Modules
+## 2. Architecture Overview
 
-| Module/File                           | Purpose |
-|--------------------------------------|---------|
-| `hashing/algorithm.py`               | `Algorithm` façade and protocol integration |
-| `hashing/algorithms/argon2.py`       | Built‑in Argon2id implementation |
-| `hashing/policies/argon2.py`         | `Argon2Policy` dataclass + validation + `BENCH_SCHEMA` |
-| `hashing/algorithm_registry.py`      | Registration decorators / lookup for algorithms |
-| `hashing/policy_registry.py`         | Registration decorators / lookup for policies |
-| `hashing/factory.py`                 | `HashingFactory` (policy + algorithm instantiation) |
-| `hashing/registry.py`                | Auto-loader (`load_all`) for discovery |
-| `hashing/interfaces.py`              | Protocols / typing contracts (e.g. `AlgorithmProtocol`) |
+```
+  +----------------------+
+  |  Config (env/dict)   |
+  +----------+-----------+
+             |
+             v
+      +----------------+       +--------------------+
+      | HashingFactory | ----> | Policy (dataclass) |
+      +------+---------+       +--------------------+
+             |
+             v
+       +------------+
+       | Algorithm  |  (façade: pepper + guards + errors)
+       +------+-----+
+              |
+              v
+      +-----------------------+
+      | Implementation        |
+      | hash_raw/verify_raw   |
+      +-----------------------+
+              |
+              v
+  Underlying libs (argon2, bcrypt)
+```
+
+Discovery:
+- `load_all()` imports `hashing/policies/*` and `hashing/algorithms/*` exactly once (idempotent)
+- Registrations occur via decorators
+- Snapshots allow `restore_from_snapshots()` in tests/reloads
 
 ---
 
-## 4. Quick Start
+## 3. Core Concepts
+
+| Concept | Description |
+|---------|-------------|
+| Policy | Frozen dataclass with parameters, validation, optional `BENCH_SCHEMA` |
+| Algorithm Implementation | Class exposing `hash_raw`, `verify_raw`, `needs_rehash` |
+| Algorithm Façade | Applies pepper and wraps errors |
+| Pepper Subsystem | Strategy registry + pipeline |
+| Registry | Case‑insensitive variant → class mapping |
+| BENCH_SCHEMA | Enumerates parameter search grid |
+| Structural Policy Protocol | Minimal shape expectations (`to_dict`, prefix, schema) |
+
+---
+
+## 4. Public Modules
+
+| Module | Purpose |
+|--------|---------|
+| `hashing/algorithm.py` | Façade (pepper + delegation + error wrapping) |
+| `hashing/algorithms/argon2.py` | Argon2id implementation |
+| `hashing/algorithms/bcrypt.py` | bcrypt implementation |
+| `hashing/policies/*` | Policy dataclasses + tuning schemas |
+| `hashing/factory.py` | Config → policy + façade |
+| `hashing/algorithm_registry.py` | Algorithm registry |
+| `hashing/policy_registry.py` | Policy registry |
+| `hashing/registry.py` | Discovery (`load_all`) |
+| `transform/pepper/*` | Pepper strategies/pipeline |
+| `utils/config_loader/*` | Deterministic config → objects |
+| `bench/*` | Optional benchmarking subsystem |
+| `password/*` | Password policy + validator |
+
+---
+
+## 5. Quick Start
 
 ```python
 from securitykit.hashing import Algorithm
 from securitykit.hashing.policies.argon2 import Argon2Policy
 
-policy = Argon2Policy(time_cost=3, memory_cost=65536, parallelism=2)
-algo = Algorithm("argon2", policy, pepper="OPTIONAL_GLOBAL_PEPPER")
+policy = Argon2Policy(time_cost=3, memory_cost=64*1024, parallelism=2)
+algo = Algorithm("argon2", policy=policy)
 
 digest = algo.hash("CorrectHorseBatteryStaple!")
 assert algo.verify(digest, "CorrectHorseBatteryStaple!")
 
 if algo.needs_rehash(digest):
-    # Re-hash with new parameters if they changed
     digest = algo.hash("CorrectHorseBatteryStaple!")
 ```
 
+Enable a pepper strategy:
+
+```bash
+export PEPPER_MODE=suffix
+export PEPPER_SUFFIX=_S3CRET
+```
+
 ---
 
-## 5. Configuration Integration
+## 6. Configuration & Environment Keys
 
-Typical environment-driven instantiation uses the high-level factory:
+Example Argon2 keys:
+
+```
+HASH_VARIANT=argon2
+ARGON2_TIME_COST=3
+ARGON2_MEMORY_COST=65536
+ARGON2_PARALLELISM=2
+ARGON2_HASH_LENGTH=32
+ARGON2_SALT_LENGTH=16
+```
+
+Pepper keys (see section 8):
+
+```
+PEPPER_MODE=hmac
+PEPPER_HMAC_KEY=SuperStrongPepperKey!!!
+# optional: PEPPER_HMAC_ALGO=sha512
+```
+
+Factory usage:
 
 ```python
 from securitykit.hashing.factory import HashingFactory
-
-env_map = {
-    "HASH_VARIANT": "argon2",
-    "ARGON2_TIME_COST": "3",
-    "ARGON2_MEMORY_COST": "65536",
-    "ARGON2_PARALLELISM": "2",
-}
-
-factory = HashingFactory(env_map)
-algo = factory.get_algorithm()        # Policy resolved automatically
-policy = factory.get_policy()         # Access the policy directly if needed
+config = dict(os.environ)
+algo = HashingFactory(config).get_algorithm()
+policy = HashingFactory(config).get_policy(algo.variant)
 ```
 
-All variant-specific keys:
-```
-ARGON2_TIME_COST
-ARGON2_MEMORY_COST
-ARGON2_PARALLELISM
-ARGON2_HASH_LENGTH
-ARGON2_SALT_LENGTH
-```
-Missing optional parameters fall back to policy defaults with a warning. Missing required parameters raise a configuration error.
+**Convention:** `{VARIANT}_{PARAM}` uppercased.  
+Missing optional keys → policy defaults (warn logged).  
+Invalid / out‑of‑range → immediate exception.
 
 ---
 
-## 6. Rehashing Semantics
+## 7. Rehash Semantics
 
-`Algorithm.needs_rehash(stored_hash)` returns `True` if the existing encoded hash does not match current policy parameters (e.g. higher `time_cost`, longer hash length). Typical flow:
+| Algorithm | Mechanism |
+|-----------|-----------|
+| Argon2 | `argon2.PasswordHasher.check_needs_rehash` |
+| bcrypt | Parse cost factor from hash and compare to policy |
+
+Pattern:
 
 ```python
-stored_hash = user_record.password_hash
 if algo.needs_rehash(stored_hash):
-    new_hash = algo.hash(plain_password)
-    # Persist new_hash
+    stored_hash = algo.hash(plaintext)
 ```
 
-The high-level API (`securitykit.api.rehash_password`) wraps this pattern for convenience.
+Notes:
+- Malformed hash → logged + returns `False` (conservative)
+- Pepper changes alone do **not** drive `needs_rehash`; treat pepper rotation as explicit migration
 
 ---
 
-## 7. Pepper Support
+## 8. Pepper Subsystem
 
-Algorithms accept an optional `pepper` (server-side secret). It should:
-- Come from a secure secret manager
-- Not be stored alongside user hashes
-- Be stable across the lifetime of existing hashes (rotation requires migration strategy)
+Properties:
 
-Pepper usage pattern:
+- Centralized (façade calls pipeline)
+- Strategy‑based: `noop`, `prefix`, `suffix`, `prefix_suffix`, `interleave`, `hmac`
+- Applied exactly once
+- Configured exclusively via `PEPPER_*`
+
+### Keys
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `PEPPER_ENABLED` | `true` | Master switch |
+| `PEPPER_MODE` | `noop` | Strategy |
+| `PEPPER_SECRET` | (empty) | Base secret for simple modes |
+| `PEPPER_PREFIX` / `PEPPER_SUFFIX` | (empty) | Explicit overrides |
+| `PEPPER_INTERLEAVE_FREQ` | `0` | Insert token every N chars (≤0 noop) |
+| `PEPPER_INTERLEAVE_TOKEN` | (empty) | Token for interleave |
+| `PEPPER_HMAC_KEY` | (empty) | Required for `hmac` |
+| `PEPPER_HMAC_ALGO` | `sha256` | HMAC hash function |
+
+### Strategies
+
+| Mode | Transformation | Strength |
+|------|----------------|----------|
+| `noop` | none | – |
+| `prefix` | `prefix + password` | Obfuscation only |
+| `suffix` | `password + suffix` | Obfuscation only |
+| `prefix_suffix` | wrap both sides | Obfuscation only |
+| `interleave` | insert token at intervals | Weak obfuscation |
+| `hmac` | `hex(HMAC(key, pw))` | Cryptographic |
+
+> Only `hmac` provides cryptographic strengthening; others are structured concatenations.
+
+Example:
+
+```bash
+export PEPPER_MODE=hmac
+export PEPPER_HMAC_KEY='Base64OrRandom32+Chars'
+```
+
+---
+
+## 9. Benchmark Interoperability
+
+Policies may define a `BENCH_SCHEMA`:
+
 ```python
-algo = Algorithm("argon2", policy, pepper=PEPPER_VALUE)
+BENCH_SCHEMA = {
+    "time_cost": [2, 3, 4],
+    "memory_cost": [65536, 131072],
+    "parallelism": [1, 2],
+}
 ```
+
+Process: enumerate → time → score → select → emit config.  
+CI tip: reduce candidate lists or monkeypatch timers.
 
 ---
 
-## 8. Benchmark Interoperability
+## 10. Extending (Policies & Algorithms)
 
-Policies that define a `BENCH_SCHEMA`:
-
-```python
-class Argon2Policy(...):
-    BENCH_SCHEMA = {
-        "time_cost": [2, 3, 4],
-        "memory_cost": [65536, 131072],
-        "parallelism": [1, 2],
-    }
-```
-
-The benchmarking subsystem:
-1. Enumerates all combinations
-2. Times hashing
-3. Selects a “best” configuration based on target time (balanced or closest)
-4. Produces an `.env.local` with tuned values
-5. Adds integrity metadata (`GENERATED_SHA256`) for bootstrap validation
-
----
-
-## 9. Extending
-
-### New Policy
+### Policy
 
 ```python
 from dataclasses import dataclass
 from securitykit.hashing.policy_registry import register_policy
 
-@register_policy("bcrypt")
-@dataclass
-class BcryptPolicy:
-    cost: int = 12
-    BENCH_SCHEMA = {"cost": [10, 12, 14]}
-
+@register_policy("scrypt")
+@dataclass(frozen=True)
+class ScryptPolicy:
+    ENV_PREFIX: str = "SCRYPT_"
+    BENCH_SCHEMA = {"n": [2**14, 2**15], "r": [8, 16], "p": [1, 2]}
+    n: int = 2**14
+    r: int = 8
+    p: int = 1
+    def to_dict(self): return {"n": self.n, "r": self.r, "p": self.p}
     def __post_init__(self):
-        if self.cost < 4 or self.cost > 31:
-            raise ValueError("bcrypt cost out of accepted range")
+        if self.n < 2**14:
+            raise ValueError("n too low")
 ```
 
-### New Algorithm
+### Algorithm (raw interface)
 
 ```python
 from securitykit.hashing.algorithm_registry import register_algorithm
-from securitykit.hashing.interfaces import AlgorithmProtocol
+from securitykit.hashing.policies.scrypt import ScryptPolicy
 
-@register_algorithm("bcrypt")
-class Bcrypt(AlgorithmProtocol):
-    def __init__(self, policy, pepper: str | None = None):
+@register_algorithm("scrypt")
+class Scrypt:
+    DEFAULT_POLICY_CLS = ScryptPolicy
+    def __init__(self, policy: ScryptPolicy | None = None):
+        policy = policy or ScryptPolicy()
+        if not isinstance(policy, ScryptPolicy):
+            raise TypeError("policy must be ScryptPolicy")
         self.policy = policy
-        self.pepper = pepper
-
-    def hash(self, password: str) -> str:
-        # combine pepper if provided; delegate to bcrypt lib
-        ...
-
-    def verify(self, stored_hash: str, password: str) -> bool:
-        ...
-
-    def needs_rehash(self, stored_hash: str) -> bool:
-        # parse bcrypt cost and compare with policy.cost
-        ...
+    def hash_raw(self, peppered_password: str) -> str: ...
+    def verify_raw(self, stored_hash: str, peppered_password: str) -> bool: ...
+    def needs_rehash(self, stored_hash: str) -> bool: ...
 ```
 
-### Registration Notes
+**Façade handles:** pepper, empty password guard, error wrapping.
 
-- Variant names must be unique (case-insensitive)
-- Decorators enforce no duplicate registration
-- Algorithms must satisfy the `AlgorithmProtocol` interface
-
----
-
-## 10. Factory Usage Patterns
-
-| Use Case                | Approach |
-|-------------------------|----------|
-| Standard initialization | `HashingFactory(os.environ).get_algorithm()` |
-| Inspect policy only     | `factory.get_policy()` |
-| Custom pepper injection | Build policy, then `Algorithm(variant, policy, pepper=...)` |
-| Testing overrides       | Provide a minimal dict with just relevant keys |
+Checklist:
+1. Register policy
+2. (Optional) Add `BENCH_SCHEMA`
+3. Implement algorithm `hash_raw` / `verify_raw`
+4. Implement `needs_rehash`
+5. Add tests (roundtrip, param parse, rehash)
+6. Pepper diff test (optional)
 
 ---
 
-## 11. Error Handling
+## 11. Error & Exception Model
 
-| Error Type / Scenario      | Raised / Logged |
-|----------------------------|-----------------|
-| Missing required policy keys | `ConfigValidationError` (via config loader) |
-| Invalid parameter value       | `ValueError` inside policy → wrapped in `ConfigValidationError` via factory |
-| Unregistered variant          | Lookup error in registry → surfaced from factory |
-| Rehash parsing error          | `needs_rehash` implementations should return `True` or `False`; log anomalies |
+| Exception | Source | Meaning |
+|-----------|--------|---------|
+| `HashingError` | Façade | Hash input invalid / delegate failure |
+| `VerificationError` | Façade/delegate | Unexpected verify failure |
+| `InvalidPolicyConfig` / `ValueError` | Policy init | Invalid parameter |
+| `UnknownAlgorithmError` | Registry | No such variant |
+| `UnknownPolicyError` | Registry | No such variant |
+| `ConfigValidationError` | Config loader | Aggregated conversion/type errors |
+| `PepperConfigError` | Pepper builder | Missing required secret/key |
+| `PepperStrategyConstructionError` | Strategy build | Unsupported variant/algorithm |
 
----
-
-## 12. Testing Guidance
-
-Recommended isolation patterns:
-
-| Pattern | Purpose |
-|---------|---------|
-| Snapshot registries before test | Avoid leaking temporary variants |
-| Patch hash function for speed | Keep timing tests fast and deterministic |
-| Parametrize policy edge values | Boundary coverage (min/max) |
-| Roundtrip test | `hash` then `verify` (valid + invalid password) |
-| Rehash test | Hash with old parameters → increase one parameter → assert `needs_rehash` |
-
-Example fixture (conceptual):
-```python
-@pytest.fixture
-def fast_algo(monkeypatch):
-    from securitykit.hashing.algorithm import Algorithm
-    # monkeypatch underlying library call if needed
-```
+Hash mismatch → `False`, not exception.
 
 ---
 
-## 13. Best Practices
+## 12. Testing Strategy & Patterns
 
-| Practice | Rationale |
-|----------|-----------|
-| Keep policy constructors free of side-effects | Easier validation and testing |
-| Validate numeric bounds in `__post_init__`    | Fail early, explicit error paths |
-| Avoid embedding environment reads in algorithms | Use factory or high-level API |
-| Rehash opportunistically on login             | Gradual fleet upgrade without bulk jobs |
-| Separate pepper management from config        | Secrets belong in secret stores, not static files |
-| Use benchmark output for production defaults  | Ground parameter selection in target latency |
-
----
-
-## 14. Roadmap
-
-| Planned | Description |
-|---------|-------------|
-| Additional algorithms | bcrypt, scrypt, PBKDF2 implementations |
-| Migration helpers     | Multi-hash support (e.g. accept old → upgrade to new) |
-| Parameter advisory    | Heuristics recommending stronger settings based on hardware |
-| Weighted analyzer     | Allow performance vs memory tradeoff modes |
-| Pluggable encoders    | Support alternate on-disk hash formats |
+| Test Type | Target |
+|-----------|--------|
+| Roundtrip | `hash` / `verify` including mismatch |
+| Pepper | Hash diff & cross verify failure |
+| Param Encoding | Parse Argon2 / bcrypt parameters |
+| Rehash | Old policy → stronger policy |
+| Error Paths | Empty password, delegate exceptions |
+| Config Loader | Conversions + type mismatches |
+| Pepper Strategies | Unknown mode fallback, HMAC key edge |
+| Bench Smoke | Non‑empty schema enumeration |
 
 ---
 
-## Appendix: Minimal Manual Flow
+## 13. Best Practices & Security Notes
+
+| Practice | Reason |
+|----------|--------|
+| Frozen policies | Prevent silent downgrades |
+| Central pepper | Consistency & reduced errors |
+| Use HMAC for real peppering | Cryptographic binding |
+| Lazy rehash on login | Zero downtime upgrades |
+| Rotate pepper with version metadata | Controlled migrations |
+| Keep pepper key separate from DB backups | Defense‑in‑depth |
+| Log warnings for weak params | Operational visibility |
+| Pin crypto lib versions | Avoid semantic shifts |
+
+---
+
+## 14. Migration / “What Changed”
+
+| Old | New |
+|-----|-----|
+| `Algorithm(..., pepper="X")` | Pepper via `PEPPER_*` |
+| Per‑algorithm `_with_pepper` | Central pipeline |
+| Implementation `hash()` | `hash_raw`; façade applies pepper |
+| Inheritance heavy policies | Frozen dataclasses |
+| Manual parametrize duplication | Registry-driven dynamic tests |
+| Implicit pepper behavior | Explicit strategy config |
+
+---
+
+## 15. Roadmap
+
+| Item | Status | Notes |
+|------|--------|-------|
+| Scrypt implementation | Planned | Extend raw pattern |
+| Pepper rotation tooling | Planned | Versioned keys / dual verify |
+| Multi-hash migration helper | Planned | Legacy → modern |
+| Weighted benchmark scoring | Planned | Heuristic tuning |
+| Advisory heuristics | Planned | Hardware-aware |
+| Hash format compatibility | Investigating | Legacy bcrypt variants |
+| Per-user HKDF pepper | Planned | Blast radius reduction |
+
+---
+
+## 16. Appendix: Minimal Manual Flow
 
 ```python
 from securitykit.hashing.factory import HashingFactory
 
-# 1. Provide configuration (env or dict)
 config = {
     "HASH_VARIANT": "argon2",
     "ARGON2_TIME_COST": "3",
-    "ARGON2_MEMORY_COST": "65536",
+    "ARGON2_MEMORY_COST": f"{64*1024}",
     "ARGON2_PARALLELISM": "2",
 }
 
-# 2. Build algorithm
+# Optional pepper
+config.update({
+    "PEPPER_MODE": "hmac",
+    "PEPPER_HMAC_KEY": "ProductionRandom32+ByteKey",
+})
+
 algo = HashingFactory(config).get_algorithm()
 
-# 3. Hash user password
 stored = algo.hash("UserPass123!")
-
-# 4. Verify later
-if algo.verify(stored, "UserPass123!"):
-    print("Authenticated")
-
-# 5. Rehash if parameters changed
+assert algo.verify(stored, "UserPass123!")
 if algo.needs_rehash(stored):
     stored = algo.hash("UserPass123!")
 ```
 
 ---
 
-This hashing layer integrates upward (via `securitykit.api`) and downward (with configurable factories and registries), enabling controlled evolution of hashing strategies without invasive code changes elsewhere.
+**Questions / Extensions?**  
+Open an issue with:
+- Variants in use
+- Current policy values
+- Target latency window
+- Hardware/memory constraints
+- Pepper mode & rotation plan
+
+The more context you provide, the better recommendations we can give.

@@ -30,10 +30,16 @@ warnings.filterwarnings(
     message=r".*found in sys\.modules after import of package 'securitykit\.bench'.*",
 )
 
+# NOTE:
+# For reproducible raw hash performance, we explicitly disable pepper during
+# benchmarking by passing config={"PEPPER_ENABLED": "false"} to the Algorithm
+# façade. This ensures timing reflects the hashing algorithm parameters only,
+# independent of any active PEPPER_* strategy in the environment.
+
 
 def _measure(policy: Any, hasher: Algorithm, rounds: int = DEFAULT_ROUNDS) -> float:
     """Measure average hash time (ms) for a given policy."""
-    timings = []
+    timings: list[float] = []
     for _ in range(rounds):
         start = time.perf_counter()
         hasher.hash("benchmark-password")
@@ -61,7 +67,10 @@ def _cartesian(schema: dict[str, list[Any]]) -> Iterable[dict[str, Any]]:
 
 
 def _format_policy_line(
-    policy_obj: Any, schema_keys: list[str], ms: float | None = None, delta_pct: float | None = None
+    policy_obj: Any,
+    schema_keys: list[str],
+    ms: float | None = None,
+    delta_pct: float | None = None,
 ) -> str:
     """Pretty-print a policy using the order defined by the schema."""
     parts = [f"{k}={getattr(policy_obj, k)}" for k in schema_keys]
@@ -107,9 +116,10 @@ def run_benchmark(
         with tqdm(total=total, desc=f"Benchmarking {variant}") as bar:
             for combo in _cartesian(schema):
                 policy = PolicyCls(**combo)
-                hasher = Algorithm(variant, policy)
+                # CHANGE: Disable pepper to isolate raw hashing performance
+                hasher = Algorithm(variant, policy, config={"PEPPER_ENABLED": "false"})
                 elapsed = _measure(policy, hasher, rounds=rounds)
-                # store as a "result" with single (averaged) timing for simplicity
+                # Store as a "result" with single (averaged) timing for simplicity
                 results.append(BenchmarkResult(policy, [elapsed], target_ms))
                 bar.update(1)
 

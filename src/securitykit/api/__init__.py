@@ -1,39 +1,13 @@
 """
 securitykit.api
 ================
-Public API for end users. Import everything you need from here.
+Public API surface (lazy). Symbols resolved on demand.
 """
-
-# Hashing
-from securitykit.hashing.algorithm import Algorithm
-from securitykit.hashing.factory import HashingFactory
-from securitykit.hashing.algorithm_registry import (
-    register_algorithm,
-    list_algorithms,
-    get_algorithm_class,
-)
-from securitykit.hashing.policy_registry import (
-    register_policy,
-    list_policies,
-    get_policy_class,
-)
-
-# Policies
-from securitykit.hashing.policies.argon2 import Argon2Policy
-from securitykit.password.policy import PasswordPolicy
-
-# Password utilities
-from securitykit.password.validator import PasswordValidator
-
-# High-level API
-from securitykit.api.password_security import (
-    hash_password,
-    verify_password,
-    rehash_password,
-)
+from __future__ import annotations
+from typing import Any
+from securitykit.hashing.registry import load_all as _load_all
 
 __all__ = [
-    # Hashing
     "Algorithm",
     "HashingFactory",
     "register_algorithm",
@@ -42,16 +16,35 @@ __all__ = [
     "register_policy",
     "list_policies",
     "get_policy_class",
-
-    # Policies
     "Argon2Policy",
+    "BcryptPolicy",
     "PasswordPolicy",
-
-    # Password
     "PasswordValidator",
-
-    # High-level API
     "hash_password",
     "verify_password",
     "rehash_password",
 ]
+
+def _exports() -> dict[str, Any]:
+    return {
+        "Algorithm": lambda: __import__("securitykit.hashing.algorithm", fromlist=["Algorithm"]).hashing.algorithm.Algorithm,
+        "HashingFactory": lambda: __import__("securitykit.hashing.factory", fromlist=["HashingFactory"]).hashing.factory.HashingFactory,
+        "register_algorithm": lambda: __import__("securitykit.hashing.algorithm_registry", fromlist=["register_algorithm"]).hashing.algorithm_registry.register_algorithm,
+        "list_algorithms": lambda: (_load_all() or __import__("securitykit.hashing.algorithm_registry", fromlist=["list_algorithms"]).hashing.algorithm_registry.list_algorithms()),
+        "get_algorithm_class": lambda: __import__("securitykit.hashing.algorithm_registry", fromlist=["get_algorithm_class"]).hashing.algorithm_registry.get_algorithm_class,
+        "register_policy": lambda: __import__("securitykit.hashing.policy_registry", fromlist=["register_policy"]).hashing.policy_registry.register_policy,
+        "list_policies": lambda: (_load_all() or __import__("securitykit.hashing.policy_registry", fromlist=["list_policies"]).hashing.policy_registry.list_policies()),
+        "get_policy_class": lambda: __import__("securitykit.hashing.policy_registry", fromlist=["get_policy_class"]).hashing.policy_registry.get_policy_class,
+        "Argon2Policy": lambda: __import__("securitykit.hashing.policies.argon2", fromlist=["Argon2Policy"]).hashing.policies.argon2.Argon2Policy,
+        "BcryptPolicy": lambda: __import__("securitykit.hashing.policies.bcrypt", fromlist=["BcryptPolicy"]).hashing.policies.bcrypt.BcryptPolicy,
+        "PasswordPolicy": lambda: __import__("securitykit.password.policy", fromlist=["PasswordPolicy"]).password.policy.PasswordPolicy,
+        "PasswordValidator": lambda: __import__("securitykit.password.validator", fromlist=["PasswordValidator"]).password.validator.PasswordValidator,
+        "hash_password": lambda: __import__("securitykit.api.password_security", fromlist=["hash_password"]).api.password_security.hash_password,
+        "verify_password": lambda: __import__("securitykit.api.password_security", fromlist=["verify_password"]).api.password_security.verify_password,
+        "rehash_password": lambda: __import__("securitykit.api.password_security", fromlist=["rehash_password"]).api.password_security.rehash_password,
+    }
+
+def __getattr__(name: str) -> Any:
+    if name not in __all__:
+        raise AttributeError(f"securitykit.api has no attribute '{name}'")
+    return _exports()[name]()

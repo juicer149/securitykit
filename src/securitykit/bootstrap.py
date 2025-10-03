@@ -21,9 +21,9 @@ from securitykit.version import __version__
 from securitykit import config as sk_config
 
 
-# --------------------------------------------------
+# ---------------------------------------------------------------------------
 # Centralized env access helpers
-# --------------------------------------------------
+# ---------------------------------------------------------------------------
 
 def _env(name: str) -> str:
     """
@@ -40,12 +40,13 @@ def _bool_flag(name: str) -> bool:
     return _env(name).lower() in ("1", "true", "yes", "on")
 
 
-# --------------------------------------------------
+# ---------------------------------------------------------------------------
 # Helpers
-# --------------------------------------------------
+# ---------------------------------------------------------------------------
 @contextmanager
 def _file_lock(path: Path):
     if not HAVE_PORTALOCKER:
+        # Best-effort mode: proceed without interprocess lock
         yield
         return
     lock_path = str(path) + ".lock"
@@ -90,15 +91,28 @@ def _validate_generated_block(path: Path):
         )
 
 
-# --------------------------------------------------
+# ---------------------------------------------------------------------------
 # Auto-benchmark bootstrap
-# --------------------------------------------------
+# ---------------------------------------------------------------------------
 def ensure_env_config():
+    """
+    Ensure hashing parameters for the selected variant are populated.
+
+    Behavior:
+      - Load .env then .env.local (local overrides).
+      - If all required BENCH_SCHEMA-derived keys present → return.
+      - If incomplete and AUTO_BENCHMARK=1 → run benchmark (pepper neutralized
+        by benchmark subsystem so timing reflects raw hashing cost).
+      - Generate .env.local with chosen parameters + integrity hash.
+      - Do NOT export any PEPPER_* keys here: pepper is an orthogonal concern.
+
+    Safe in multi-process scenarios: file lock + re-check after acquisition.
+    """
     if _bool_flag("SECURITYKIT_DISABLE_BOOTSTRAP"):
         logger.info("Bootstrap disabled via SECURITYKIT_DISABLE_BOOTSTRAP=1")
         return
 
-    # Layer .env then .env.local
+    # Layer .env then .env.local (local wins)
     load_dotenv(Path(".env"), override=False)
     load_dotenv(Path(".env.local"), override=True)
 
@@ -113,6 +127,13 @@ def ensure_env_config():
         return
 
     bench_schema = getattr(policy_cls, "BENCH_SCHEMA", {})
+    if not bench_schema:
+        logger.debug(
+            "Policy '%s' has no BENCH_SCHEMA. Bootstrap will not attempt benchmarking.",
+            variant,
+        )
+        return
+
     required_prefix = variant.upper() + "_"
     required_keys = [f"{required_prefix}{field.upper()}" for field in bench_schema.keys()]
 
@@ -126,13 +147,13 @@ def ensure_env_config():
 
     # Incomplete
     logger.warning(
-        "%s config incomplete (%d present, %d missing). Regenerating full set.",
+        "%s hashing config incomplete (%d present, %d missing). Regenerating full set.",
         variant,
         len(present),
         len(missing),
     )
 
-    # Check AUTO_BENCHMARK
+    # Check AUTO_BENCHMARK gate
     if not _bool_flag("AUTO_BENCHMARK"):
         env_mode = _env("SECURITYKIT_ENV") or sk_config.DEFAULTS["SECURITYKIT_ENV"]
         lvl = logger.error if env_mode == "production" else logger.warning
@@ -144,10 +165,9 @@ def ensure_env_config():
         )
         return
 
-    # Benchmark and export
     export_path = Path(".env.local")
     with _file_lock(export_path):
-        # Re-check after acquiring lock
+        # Re-check after acquiring lock (another process maybe finished)
         if export_path.exists():
             load_dotenv(export_path, override=True)
             if all(k in os.environ for k in required_keys):
@@ -163,7 +183,11 @@ def ensure_env_config():
                 sk_config.DEFAULTS["AUTO_BENCHMARK_TARGET_MS"],
             )
         )
+
         try:
+            # BenchmarkConfig (as previously patched) neutralizes pepper internally
+            # if you adopted the neutralize_pepper flag; otherwise bench/bench.py
+            # already disables pepper per Algorithm invocation.
             config = BenchmarkConfig(variant=variant, target_ms=target_ms)
             runner = BenchmarkRunner(config)
             result = runner.run()
@@ -171,20 +195,26 @@ def ensure_env_config():
             logger.error("Benchmark failed for %s: %s. Aborting bootstrap.", variant, e)
             return
 
-        # Start with benchmarked values
-        env_config = result["best"]
+        env_config = result["best"]  # Start with tuned parameters (HASH_VARIANT + policy keys)
 
-        # Merge policy defaults to ensure completeness
-        defaults = policy_cls().to_dict()
+        # Merge defaults for any fields not enumerated in the BENCH_SCHEMA (edge cases)
+        try:
+            defaults = policy_cls().to_dict()
+        except Exception:
+            defaults = {}
         for field, value in defaults.items():
             key = f"{variant.upper()}_{field.upper()}"
             env_config.setdefault(key, str(value))
 
+        # Metadata (exclude any PEPPER_* to avoid leaking secrets or coupling)
         env_config["GENERATED_BY"] = f"securitykit-bench v{__version__}"
         env_config["GENERATED_SHA256"] = _sha256_of(env_config)
 
         export_env(env_config, export_path)
         os.environ.update(env_config)
         logger.info(
-            "Generated %s config → %s (target=%d ms)", variant, export_path, target_ms
+            "Generated %s hashing config → %s (target=%d ms)",
+            variant,
+            export_path,
+            target_ms,
         )

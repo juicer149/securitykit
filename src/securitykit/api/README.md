@@ -1,82 +1,84 @@
 # SecurityKit API
 
-The `securitykit.api` package provides the *public, stable interface* for the SecurityKit toolkit.  
-It consolidates hashing, password policy validation, and rehash management into a cohesive surface that applications can consume without touching internal registries or factories.
+The `securitykit.api` package is the *stable public surface* of SecurityKit.
+
+It exposes high‑level password functions, the hashing façade, policies, and registry helpers without requiring direct imports of internal modules. Pepper handling is centralized and configuration‑driven (`PEPPER_*`), and algorithm implementations are wrapped by a façade that enforces validation and applies pepper exactly once.
 
 ---
 
-## Contents
+## Table of Contents
 
-1. Goals
-2. Exposed Symbols
-3. High-Level Service: `PasswordSecurity`
-4. Functional API (Convenience Functions)
-5. Construction Patterns
-6. Environment Integration
-7. Rehash Workflow
-8. Error Semantics
-9. Minimal End‑to‑End Example
-10. Extension Points
-11. When to Drop Down to Lower Layers
-12. Testing Recommendations
-13. Roadmap
+1. Goals  
+2. Exported Symbols  
+3. Architecture (API Layer)  
+4. Functional Convenience API  
+5. Algorithm Façade & Factory  
+6. Pepper Configuration (`PEPPER_*`)  
+7. Rehash Workflow  
+8. Error & Return Semantics  
+9. Configuration Examples  
+10. End‑to‑End Example  
+11. When to Use Lower Layers  
+12. Testing Patterns  
+13. Migration (Removed / Changed)  
+14. Roadmap  
+15. Summary  
 
 ---
 
 ## 1. Goals
 
-| Goal            | Description                                                             |
-|-----------------|-------------------------------------------------------------------------|
-| Simplicity      | One object / small function set for common password operations          |
-| Safety          | Enforce password policy before hashing                                  |
-| Evolvability    | Internal hashing parameters can change; rehash path exposed             |
-| Transparency    | Clear separation of invalid password vs hash verification failure       |
-| Configuration   | Supports environment- or dict-based initialization                      |
+| Goal | Description |
+|------|-------------|
+| Simplicity | Small set of functions for typical password flows |
+| Safety | Enforces password policy before hashing |
+| Evolvability | Hash parameters can be raised over time (rehash path exposed) |
+| Transparency | Distinguishes policy errors vs. mismatches |
+| Configurability | Environment or arbitrary mapping supported |
+| Consistency | Single pepper subsystem (no per‑algorithm pepper code) |
 
 ---
 
-## 2. Exposed Symbols
+## 2. Exported Symbols
 
-From `securitykit.api` (via `__all__` or `from securitykit.api import ...`):
+From `securitykit.api` (lazy‑loaded):
 
-| Symbol               | Purpose                                           |
-|----------------------|---------------------------------------------------|
-| `PasswordSecurity`   | High-level service class (stateful)               |
-| `hash_password`      | Convenience function: validate + hash             |
-| `verify_password`    | Convenience function: verify only                 |
-| `rehash_password`    | Convenience function: conditional rehash          |
-| `PasswordPolicy`     | Password complexity dataclass                     |
-| `PasswordValidator`  | Policy enforcement class                          |
-| `Algorithm`          | Hash algorithm façade (lower-level)               |
-| `Argon2Policy`       | Built-in hashing policy implementation            |
+| Symbol | Purpose |
+|--------|---------|
+| `hash_password` | Validate + hash |
+| `verify_password` | Verify only (returns `False` on mismatch) |
+| `rehash_password` | Conditional upgrade hash |
+| `Algorithm` | High‑level façade (`hash`, `verify`, `needs_rehash`) |
+| `HashingFactory` | Build policy + façade from a config mapping |
+| `register_algorithm`, `list_algorithms`, `get_algorithm_class` | Algorithm registry |
+| `register_policy`, `list_policies`, `get_policy_class` | Policy registry |
+| `Argon2Policy`, `BcryptPolicy` | Built‑in hashing policies |
+| `PasswordPolicy` | Password complexity policy |
+| `PasswordValidator` | Enforces password policy |
 
----
-
-## 3. High-Level Service: `PasswordSecurity`
-
-Methods:
-
-| Method                                   | Behavior |
-|------------------------------------------|----------|
-| `hash(password: str) -> str`             | Validates password; returns hash string |
-| `verify(password: str, stored: str) -> bool` | Compares password with stored hash |
-| `needs_rehash(stored: str) -> bool`      | Detects outdated hashing parameters |
-| `rehash(password: str, stored: str) -> str` | Returns new hash or original if unchanged |
-| `validate(password: str) -> None`        | Raises if password violates policy |
-| `from_env(cls)`                          | Build service using environment variables |
-| `from_mapping(cls, mapping: Mapping)`    | Build from arbitrary mapping/dict |
-
-Composition:
-
-- Internally builds:
-  - A hashing algorithm (via registry + factory)
-  - A password validator (with configured `PasswordPolicy`)
+> The legacy `PasswordSecurity` class has been removed. Use the functions or the `Algorithm` façade directly.
 
 ---
 
-## 4. Functional API (Convenience Functions)
+## 3. Architecture (API Layer)
 
-For very small integrations (no object lifecycle):
+```
+App code
+  ↓
+securitykit.api (hash_password / verify_password / rehash_password)
+  ↓
+Algorithm façade (pepper application + guards + error wrapping)
+  ↓
+Concrete implementation (hash_raw / verify_raw)
+  ↓
+Underlying crypto library (argon2-cffi, bcrypt, ...)
+```
+
+Pepper is applied exactly once inside the façade based on `PEPPER_*` keys.
+
+---
+
+## 4. Functional Convenience API
 
 ```python
 from securitykit.api import hash_password, verify_password, rehash_password
@@ -86,23 +88,20 @@ assert verify_password("StrongExample1!", h)
 maybe_new = rehash_password("StrongExample1!", h)
 ```
 
-These functions:
-- Use a process-wide cached internal `PasswordSecurity` instance
-- Rebuild implicitly when environment changes (if you trigger a reload pattern)
-- Are ideal for scripts or lightweight services
-
 ---
 
-## 5. Construction Patterns
-
-### Default (environment-driven)
+## 5. Algorithm Façade & Factory
 
 ```python
-from securitykit.api import PasswordSecurity
-service = PasswordSecurity.from_env()
+from securitykit.api import Algorithm, HashingFactory
+from securitykit.hashing.policies.argon2 import Argon2Policy
+
+facade = Algorithm("argon2", policy=Argon2Policy(time_cost=3))
+digest = facade.hash("Abcdef1!")
+assert facade.verify(digest, "Abcdef1!")
 ```
 
-### Custom mapping (e.g. test fixture)
+Via the factory:
 
 ```python
 config = {
@@ -110,54 +109,39 @@ config = {
     "ARGON2_TIME_COST": "3",
     "ARGON2_MEMORY_COST": "65536",
     "ARGON2_PARALLELISM": "2",
-    "PASSWORD_MIN_LENGTH": "12",
 }
-service = PasswordSecurity.from_mapping(config)
+algo = HashingFactory(config).get_algorithm()
 ```
-
-### Injecting a pepper (advanced)
-
-If you need to force a custom pepper (instead of environment):
-
-```python
-service = PasswordSecurity.from_env()
-service.algorithm = type(service.algorithm)(
-    service.algorithm.variant,
-    service.algorithm.policy,
-    pepper="SERVER_SIDE_STATIC_OR_ROTATED_SECRET",
-)
-```
-
-(You can also rebuild the underlying algorithm through the lower-level factory.)
 
 ---
 
-## 6. Environment Integration
+## 6. Pepper Configuration (`PEPPER_*`)
 
-Expected keys (variant-specific subset depends on the hashing policy):
+Pepper is only configured via environment (or mapping) keys:
 
-| Key                                | Purpose |
-|------------------------------------|---------|
-| `HASH_VARIANT`                     | Select hashing implementation (e.g. `argon2`) |
-| `ARGON2_TIME_COST`                 | Argon2 parameter |
-| `ARGON2_MEMORY_COST`               | Argon2 parameter (bytes) |
-| `ARGON2_PARALLELISM`               | Argon2 threads/lanes |
-| `ARGON2_HASH_LENGTH`               | Hash output length |
-| `ARGON2_SALT_LENGTH`               | Salt length |
-| `PEPPER_VALUE` (optional)          | Global pepper (not stored with hash) |
-| `PASSWORD_MIN_LENGTH`              | Policy minimum length |
-| `PASSWORD_REQUIRE_UPPER`           | Policy boolean |
-| `PASSWORD_REQUIRE_LOWER`           | Policy boolean |
-| `PASSWORD_REQUIRE_DIGIT`           | Policy boolean |
-| `PASSWORD_REQUIRE_SPECIAL`         | Policy boolean |
+| Key | Default | Description |
+|-----|---------|-------------|
+| `PEPPER_ENABLED` | `true` | Master switch |
+| `PEPPER_MODE` | `noop` | One of `noop|prefix|suffix|prefix_suffix|interleave|hmac` |
+| `PEPPER_SECRET` | (empty) | Base/fallback secret for simple modes |
+| `PEPPER_PREFIX` / `PEPPER_SUFFIX` | (empty) | Override prefix/suffix explicitly |
+| `PEPPER_INTERLEAVE_FREQ` | `0` | >0 inserts token every N chars |
+| `PEPPER_INTERLEAVE_TOKEN` | (empty) | Interleave sequence (fallback: `PEPPER_SECRET`) |
+| `PEPPER_HMAC_KEY` | (empty) | Required for `hmac` |
+| `PEPPER_HMAC_ALGO` | `sha256` | Hash function for HMAC |
 
-When incomplete and `AUTO_BENCHMARK=1`, the bootstrap subsystem may auto-generate missing hashing parameters into `.env.local`.
+Example (HMAC):
+
+```bash
+export PEPPER_MODE=hmac
+export PEPPER_HMAC_KEY='Random32ByteLikeKeyHere'
+```
 
 ---
 
 ## 7. Rehash Workflow
 
-Typical application flow (e.g. during login):
+Typical login flow:
 
 ```python
 from securitykit.api import verify_password, rehash_password
@@ -165,122 +149,121 @@ from securitykit.api import verify_password, rehash_password
 if verify_password(candidate, stored_hash):
     new_hash = rehash_password(candidate, stored_hash)
     if new_hash != stored_hash:
-        # Persist updated hash (parameters improved)
-        update_user_hash(new_hash)
+        persist(new_hash)
 ```
 
-Why: Parameter evolution (e.g., increasing Argon2 time cost) can be rolled out gradually.
+---
+
+## 8. Error & Return Semantics
+
+| Situation | Behavior |
+|-----------|----------|
+| Password violates policy | Exception from validator |
+| Hash mismatch | `False` on `verify_password` |
+| Corrupt hash format | `False` (conservative) + logged warning |
+| Unknown algorithm variant | Exception during construction |
+| Invalid config type/value | `ConfigValidationError` |
+| Pepper config missing HMAC key in `hmac` mode | Pepper-specific config exception |
+
+Password mismatch vs. system/config errors are clearly separated.
 
 ---
 
-## 8. Error Semantics
+## 9. Configuration Examples
 
-| Situation                               | Raised / Returned |
-|-----------------------------------------|-------------------|
-| Password fails complexity               | `InvalidPolicyConfig` |
-| Hash verification mismatch              | `False` from `verify` |
-| Hash parsing error (corrupt input)      | Safe `False` (verify) or `needs_rehash=True` (implementation dependent) |
-| Missing required config for hashing     | `ConfigValidationError` during construction |
-| Unsupported `HASH_VARIANT`              | Error logged + raise during initialization |
-
-The API keeps cryptographic failures (verify returns `False`) distinct from configuration or policy failures (exceptions).
+```env
+HASH_VARIANT=argon2
+ARGON2_TIME_COST=3
+ARGON2_MEMORY_COST=65536
+ARGON2_PARALLELISM=2
+ARGON2_HASH_LENGTH=32
+ARGON2_SALT_LENGTH=16
+PEPPER_MODE=hmac
+PEPPER_HMAC_KEY=ChangeMeStrong
+PASSWORD_MIN_LENGTH=10
+PASSWORD_REQUIRE_UPPER=true
+PASSWORD_REQUIRE_SPECIAL=true
+```
 
 ---
 
-## 9. Minimal End‑to‑End Example
+## 10. End‑to‑End Example
 
 ```python
-from securitykit.api import PasswordSecurity
-from securitykit.exceptions import InvalidPolicyConfig
+from securitykit.api import hash_password, verify_password
 
-service = PasswordSecurity.from_mapping({
-    "HASH_VARIANT": "argon2",
-    "ARGON2_TIME_COST": "3",
-    "ARGON2_MEMORY_COST": "65536",
-    "ARGON2_PARALLELISM": "2",
-    "PASSWORD_MIN_LENGTH": "12",
-    "PASSWORD_REQUIRE_UPPER": "true",
-    "PASSWORD_REQUIRE_DIGIT": "true",
-    "PASSWORD_REQUIRE_SPECIAL": "false",
-})
-
-try:
-    digest = service.hash("ValidPass123")
-    assert service.verify("ValidPass123", digest)
-    updated = service.rehash("ValidPass123", digest)
-    # updated is either identical or a new hash if parameters changed
-except InvalidPolicyConfig as e:
-    print("Policy violation:", e)
+digest = hash_password("StrongPass9!")
+assert verify_password("StrongPass9!", digest)
 ```
 
----
-
-## 10. Extension Points
-
-| Need                           | Approach |
-|--------------------------------|----------|
-| Custom hashing implementation  | Register new algorithm + policy in `securitykit.hashing` |
-| Custom password policy fields  | Extend `PasswordPolicy` and supply your own validator |
-| Custom config source           | Use lower-level factories / config loader directly |
-| Pepper rotation                | Wrap `hash` + `verify` in migration routine, then swap pepper |
-
----
-
-## 11. When to Drop Down to Lower Layers
-
-| Use Case                                | Drop To |
-|-----------------------------------------|---------|
-| Benchmarking / tuning                   | `securitykit.bench` CLI or API |
-| Fine-grained hashing parameter control  | `hashing.factory.HashingFactory` |
-| Config introspection / documentation    | `utils.config_loader.export_schema` |
-| Custom algorithm or policy registration | Registries in `hashing/*` |
-
----
-
-## 12. Testing Recommendations
-
-| Test Focus               | Strategy |
-|--------------------------|----------|
-| Hash + verify roundtrip  | Use deterministic password; assert verify returns True |
-| Policy violation         | Intentionally weak password; assert `InvalidPolicyConfig` |
-| Rehash path              | Hash with old policy → raise parameter → assert `rehash` returns different hash |
-| Environment-based init   | Provide a minimal mapping; avoid relying on real OS env in tests |
-| Corrupt hash handling    | Pass malformed hash to `verify`; expect `False` (no exception) |
-
-Example pytest snippet:
+With pepper:
 
 ```python
-def test_high_level_roundtrip():
-    from securitykit.api import PasswordSecurity
-    svc = PasswordSecurity.from_mapping({
-        "HASH_VARIANT": "argon2",
-        "ARGON2_TIME_COST": "2",
-        "ARGON2_MEMORY_COST": "65536",
-        "ARGON2_PARALLELISM": "1",
-        "PASSWORD_MIN_LENGTH": "8",
-    })
-    pwd = "Abcdef1!"
-    h = svc.hash(pwd)
-    assert svc.verify(pwd, h)
+import os
+os.environ["PEPPER_MODE"] = "suffix"
+os.environ["PEPPER_SUFFIX"] = "_SrvPep"
+
+from securitykit.api import hash_password
+h = hash_password("StrongPass9!")
 ```
 
 ---
 
-## 13. Roadmap
+## 11. When to Use Lower Layers
 
-| Planned Feature                 | Intent |
-|---------------------------------|--------|
-| Async `PasswordSecurityAsync`   | Non-blocking I/O integration (e.g. ASGI frameworks) |
-| Framework adapters              | FastAPI / Flask / Django helper utilities |
-| Multi-hash migration utility    | Seamless upgrade from legacy bcrypt/PBKDF2 to Argon2 |
-| Pepper rotation assist          | Transitional verify+rehash helper |
-| Structured metrics hooks        | Observability (hash counts, rehash triggers) |
+| Need | Layer |
+|------|-------|
+| Performance tuning / benchmarking | `securitykit.hashing.bench` (if enabled) |
+| Fine-grained policy construction | `HashingFactory` |
+| Custom configuration loading | `utils.config_loader` |
+| Adding new algorithm or policy | `register_algorithm` / `register_policy` |
 
 ---
 
-## Summary
+## 12. Testing Patterns
 
-`securitykit.api` is the stable perimeter of the library.  
-Internal layout (registries, factories, benchmarking) can evolve, while the API layer preserves a consistent developer experience for hashing, validating, and upgrading password credentials.
+| Test | Pattern |
+|------|--------|
+| Roundtrip | `hash_password` → `verify_password` |
+| Policy violation | Weak password → expect exception |
+| Rehash path | Hash → raise param → `rehash_password` returns different hash |
+| Pepper difference | Compare hash with vs. without `PEPPER_*` |
+| Edge empty password | Expect exception on hashing |
+| Config validation | Wrong type → `ConfigValidationError` |
 
-For deeper customization, read the individual subsystem READMEs (hashing, password, config loader, bench).
+---
+
+## 13. Migration (Removed / Changed)
+
+| Legacy | Current |
+|--------|---------|
+| `PasswordSecurity` class | Functional API + `Algorithm` façade |
+| `pepper=` arg on algorithms | `PEPPER_*` strategy-based system |
+| Per‑algorithm pepper code | Central pipeline |
+| Direct `hash()` in implementation | `hash_raw`/`verify_raw` + façade for pepper |
+| Ad hoc test parametrization | Dynamic discovery + registries |
+
+---
+
+## 14. Roadmap
+
+| Feature | Status |
+|---------|--------|
+| Pepper version/rotation (`PEPPER_VERSION`) | Planned |
+| Scrypt / PBKDF2 support | Planned |
+| Multi‑hash migration helper | Planned |
+| Observability / metrics hooks | Planned |
+| Async API variant | Investigating |
+| Hardware advisory suggestions | Planned |
+
+---
+
+## 15. Summary
+
+The API layer is a lean, stable front:
+- Configuration → Factory → Façade
+- Central pepper strategies
+- Policy enforcement before hashing
+- Straightforward rehash flow
+
+Use this layer for most application integrations; drop to lower layers only for tuning, extension, or custom config flows.

@@ -1,44 +1,57 @@
-from securitykit.hashing.registry import Registry
-from securitykit.hashing.interfaces import AlgorithmProtocol
-from securitykit.exceptions import UnknownAlgorithmError
+from __future__ import annotations
+from typing import Dict, Type
 
-# Underliggande registry
-_algorithm_registry = Registry[AlgorithmProtocol]("algorithm")
+from securitykit.exceptions import RegistryConflictError, UnknownAlgorithmError
 
-# Snapshot-lista (key, klassobjekt). Behåller originalklassernas identitet.
-_registered_algorithm_snapshots: list[tuple[str, type[AlgorithmProtocol]]] = []
+_ALGORITHMS: Dict[str, Type] = {}
+_SNAPSHOTS: Dict[str, Type] = {}
 
 
 def register_algorithm(name: str):
     """
-    Decorator to register an algorithm under a given name.
-    Also stores a snapshot (only once) so registry can be restored after a clear().
+    Register an algorithm class under a variant (case-insensitive).
+    Safe to call multiple times with the *same* class; raises on different class.
     """
-    def decorator(cls: type[AlgorithmProtocol]) -> type[AlgorithmProtocol]:
-        cls2 = _algorithm_registry.register(name)(cls)
-        lowered = name.lower()
-        if not any(k == lowered and c is cls2 for k, c in _registered_algorithm_snapshots):
-            _registered_algorithm_snapshots.append((lowered, cls2))
-        return cls2
+    norm = name.lower()
+
+    def decorator(cls: Type):
+        existing = _ALGORITHMS.get(norm)
+        if existing is not None and existing is not cls:
+            raise RegistryConflictError(
+                f"Algorithm variant '{name}' already registered with {existing.__name__}"
+            )
+        _ALGORITHMS[norm] = cls
+        if norm not in _SNAPSHOTS:
+            _SNAPSHOTS[norm] = cls
+        return cls
+
     return decorator
 
 
-def restore_from_snapshots() -> None:
-    """
-    Restore registry content from previously captured snapshots.
-    Does NOT recreate classes, so isinstance remains stable.
-    """
-    _algorithm_registry._registry.clear()
-    for key, cls in _registered_algorithm_snapshots:
-        _algorithm_registry._registry[key] = cls
-
-
-def get_algorithm_class(name: str) -> type[AlgorithmProtocol]:
-    try:
-        return _algorithm_registry.get(name)
-    except KeyError as e:
-        raise UnknownAlgorithmError(str(e)) from e
+def get_algorithm_class(name: str) -> Type:
+    cls = _ALGORITHMS.get(name.lower())
+    if cls is None:
+        raise UnknownAlgorithmError(f"Unknown algorithm variant '{name}'")
+    return cls
 
 
 def list_algorithms() -> list[str]:
-    return _algorithm_registry.list()
+    return sorted(_ALGORITHMS.keys())
+
+
+def list_algorithm_classes() -> dict[str, Type]:
+    return dict(_ALGORITHMS)
+
+
+def restore_from_snapshots() -> None:
+    _ALGORITHMS.clear()
+    _ALGORITHMS.update(_SNAPSHOTS)
+
+
+__all__ = [
+    "register_algorithm",
+    "get_algorithm_class",
+    "list_algorithms",
+    "list_algorithm_classes",
+    "restore_from_snapshots",
+]

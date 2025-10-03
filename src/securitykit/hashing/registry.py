@@ -1,86 +1,64 @@
+"""
+Auto-discovery for hashing policies & algorithms.
+
+- Imports immediate submodules under securitykit.hashing.policies and
+  securitykit.hashing.algorithms exactly once (decorators register classes).
+- Supports an optional force reload (restores original snapshots via
+  the specialized registries' restore functions).
+"""
+
+from __future__ import annotations
 import importlib
 import pkgutil
-from typing import Callable, TypeVar, Generic
+from typing import Iterable
 
 from securitykit.logging_config import logger
 
-T = TypeVar("T")
+_DISCOVERED = False
 
 
-class Registry(Generic[T]):
-    def __init__(self, name: str, validator: Callable[[type], None] | None = None):
-        self._name = name
-        self._registry: dict[str, type[T]] = {}
-        self._validator = validator
+def _iter_children(pkg) -> Iterable[str]:
+    for _, mod_name, _ in pkgutil.iter_modules(pkg.__path__):
+        yield f"{pkg.__name__}.{mod_name}"
 
-    def register(self, key: str) -> Callable[[type[T]], type[T]]:
-        def decorator(cls: type[T]) -> type[T]:
-            k = key.lower()
-            if k in self._registry:
-                logger.debug("%s '%s' already registered, skipping", self._name, k)
-                return cls
-            if self._validator:
-                self._validator(cls)
-            self._registry[k] = cls
-            logger.debug("Registered %s: %s -> %s", self._name, k, cls.__name__)
-            return cls
-        return decorator
 
-    def get(self, key: str) -> type[T]:
+def _import_all(package_module_name: str) -> None:
+    try:
+        pkg = importlib.import_module(package_module_name)
+    except Exception as e:  # pragma: no cover
+        logger.error("Failed to import package %s: %s", package_module_name, e)
+        return
+    for full in _iter_children(pkg):
         try:
-            return self._registry[key.lower()]
-        except KeyError:
-            raise KeyError(f"Unknown {self._name}: {key}")
-
-    def list(self) -> list[str]:
-        return list(self._registry.keys())
-
-    def items(self) -> dict[str, type[T]]:
-        return dict(self._registry)
-
-
-_loaded = False
-_snapshots_taken = False  # Have we performed initial module discovery?
-
-
-def _autoload_package(package):
-    """
-    Imports all direct submodules of a package once (for decorator side-effects).
-    """
-    for _, module_name, _ in pkgutil.iter_modules(package.__path__):
-        full = f"{package.__name__}.{module_name}"
-        importlib.import_module(full)
+            importlib.import_module(full)
+        except Exception as e:  # pragma: no cover
+            logger.error("Failed to import submodule %s: %s", full, e)
 
 
 def load_all(force: bool = False) -> None:
     """
-    Discover and register all policies & algorithms.
+    Perform one-time discovery (or restore snapshots if force=True).
 
-    First ever call:
-        - imports submodules (decorators run, registry populated)
-        - snapshots captured by registries' decorator logic
-    Subsequent calls with force=False:
-        - no-op
-    Calls with force=True after snapshots:
-        - clears registries
-        - restores from snapshots (NO new class objects created)
+    force=True:
+        - Restores original snapshot state in each specialized registry
+          (algorithm + policy).
+        - Re-imports modules (idempotent decorator writes).
     """
-    global _loaded, _snapshots_taken
-    if _loaded and not force:
+    global _DISCOVERED
+    if _DISCOVERED and not force:
         return
 
     from securitykit.hashing import algorithm_registry, policy_registry
 
-    if not _snapshots_taken:
-        import securitykit.hashing.policies as policies_pkg
-        import securitykit.hashing.algorithms as algorithms_pkg
-        _autoload_package(policies_pkg)
-        _autoload_package(algorithms_pkg)
-        _snapshots_taken = True
-        logger.debug("Initial discovery done; snapshots captured.")
-    elif force:
+    if force:
+        # restore original class objects
         algorithm_registry.restore_from_snapshots()
         policy_registry.restore_from_snapshots()
         logger.debug("Registries restored from snapshots (force=True).")
 
-    _loaded = True
+    # Always (re-)import modules; decorators are idempotent for same class.
+    _import_all("securitykit.hashing.policies")
+    _import_all("securitykit.hashing.algorithms")
+
+    _DISCOVERED = True
+    logger.debug("Hashing discovery complete (force=%s).", force)

@@ -14,7 +14,8 @@ class BenchmarkRunner:
     def __init__(self, config: BenchmarkConfig):
         self.config = config
         self.analyzer = ResultAnalyzer(config.schema)
-        self.engine = BenchmarkEngine(config.variant, repeats=config.rounds)
+        self.engine = BenchmarkEngine(config.variant, repeats=config.rounds,
+                                      config=config.algorithm_config())
 
     def run(self) -> dict[str, Any]:
         results = self._collect_results()

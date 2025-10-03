@@ -1,7 +1,7 @@
 # securitykit/bench/engine.py
 import time
 import statistics
-from typing import Any
+from typing import Any, Mapping
 from dataclasses import dataclass, field
 
 from securitykit.hashing.algorithm import Algorithm
@@ -39,18 +39,18 @@ class BenchmarkResult:
 class BenchmarkEngine:
     """Run timing benchmarks for a given algorithm and policy."""
 
-    def __init__(self, variant: str, repeats: int = 5):
+    def __init__(self, variant: str, repeats: int = 5, config: Mapping[str, str] | None = None):
         self.variant = variant
         self.repeats = repeats
+        self._algo_config = config
 
     def _time_once(self, policy) -> float:
-        algo = Algorithm(self.variant, policy)
+        algo = Algorithm(self.variant, policy, config=self._algo_config)  # pass config
         start = time.perf_counter()
         algo.hash("benchmark-password")
         return (time.perf_counter() - start) * 1000
 
     def run(self, policy, target_ms: int) -> BenchmarkResult:
-        # Warmup (discard first run)
-        self._time_once(policy)
+        self._time_once(policy)  # warmup
         times = [self._time_once(policy) for _ in range(self.repeats)]
         return BenchmarkResult(policy, times, target_ms)

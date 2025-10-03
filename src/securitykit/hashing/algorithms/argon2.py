@@ -1,39 +1,52 @@
-# securitykit/hashing/algorithms/argon2.py
-from typing import Optional
-from argon2 import PasswordHasher
-from argon2.exceptions import VerifyMismatchError
+from __future__ import annotations
+from typing import ClassVar
+
+try:
+    from argon2 import PasswordHasher  # type: ignore[import-not-found]
+    from argon2.exceptions import VerifyMismatchError  # type: ignore[import-not-found]
+except Exception as e:  # pragma: no cover
+    raise RuntimeError("argon2-cffi is required for Argon2 hashing") from e
 
 from securitykit.hashing.algorithm_registry import register_algorithm
-from securitykit.hashing.interfaces import AlgorithmProtocol
 from securitykit.hashing.policies.argon2 import Argon2Policy
 from securitykit.exceptions import HashingError, VerificationError
 from securitykit.logging_config import logger
 
 
 @register_algorithm("argon2")
-class Argon2(AlgorithmProtocol):
-    """Password hashing and verification with Argon2id."""
+class Argon2:
+    """
+    Argon2id implementation expecting *already peppered* password input
+    for its raw methods. Pepper is applied by the Algorithm façade.
+    """
 
-    def __init__(self, policy: Optional[Argon2Policy] = None) -> None:
-        self.policy = policy or Argon2Policy()
+    DEFAULT_POLICY_CLS: ClassVar[type[Argon2Policy]] = Argon2Policy
+
+    def __init__(self, policy: Argon2Policy | None = None) -> None:
+        policy = policy or Argon2Policy()
+        if not isinstance(policy, Argon2Policy):
+            raise TypeError("policy must be Argon2Policy")
+
+        self.policy = policy
         self._hasher = PasswordHasher(
-            time_cost=self.policy.time_cost,
-            memory_cost=self.policy.memory_cost,
-            parallelism=self.policy.parallelism,
-            hash_len=self.policy.hash_length,
-            salt_len=self.policy.salt_length,
+            time_cost=policy.time_cost,
+            memory_cost=policy.memory_cost,
+            parallelism=policy.parallelism,
+            hash_len=policy.hash_length,
+            salt_len=policy.salt_length,
         )
 
-    def hash(self, password: str) -> str:
-        if not password:
+    # New raw API
+    def hash_raw(self, peppered_password: str) -> str:
+        if not peppered_password:
             raise HashingError("Password cannot be empty")
-        return self._hasher.hash(password)
+        return self._hasher.hash(peppered_password)
 
-    def verify(self, stored_hash: str | None, password: str | None) -> bool:
-        if not stored_hash or not password:
+    def verify_raw(self, stored_hash: str, peppered_password: str) -> bool:
+        if not stored_hash or not peppered_password:
             return False
         try:
-            return self._hasher.verify(stored_hash, password)
+            return self._hasher.verify(stored_hash, peppered_password)
         except VerifyMismatchError:
             return False
         except Exception as e:

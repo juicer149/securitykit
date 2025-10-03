@@ -1,28 +1,20 @@
-# securitykit/core/interfaces.py
-from typing import Protocol, runtime_checkable, Any, ClassVar, Union
+from __future__ import annotations
+from typing import Protocol, runtime_checkable, ClassVar, Union
 
 BenchValue = Union[int, float, str, bool]
 
 
 @runtime_checkable
-class AlgorithmProtocol(Protocol):
-    """
-    All algorithm implementations must follow this interface.
-    """
-
-    def __init__(self, policy: object | None = None, pepper: str | None = None) -> None: ...
-    def hash(self, password: str) -> str: ...
-    def verify(self, stored_hash: str, password: str) -> bool: ...
-    def needs_rehash(self, stored_hash: str) -> bool: ...
-
-
-@runtime_checkable
 class PolicyProtocol(Protocol):
     """
-    All policy classes should follow this interface.
-    Typically implemented as a dataclass.
-    """
+    Minimal benchmarkable hashing policy contract.
 
+    All concrete hashing policies must supply:
+      - ENV_PREFIX
+      - BENCH_SCHEMA (may be {})
+      - to_dict()
+    """
+    ENV_PREFIX: ClassVar[str]
     BENCH_SCHEMA: ClassVar[dict[str, list[BenchValue]]]
 
-    def to_dict(self) -> dict[str, Any]: ...
+    def to_dict(self) -> dict[str, object]: ...
