@@ -7,6 +7,7 @@ requires-python = ">=3.12"
 
 dependencies = [
     "argon2-cffi>=21.3.0",
+    "bcrypt>=5.0.0",
     "python-dotenv>=1.0.0",
 ]
 
@@ -35,11 +36,10 @@ testpaths = ["tests_new"]
 
 [tool.black]
 line-length = 88
-target-version = ["py310"]
+target-version = ["py312"]
 
 [tool.mypy]
 python_version = "3.12"
 check_untyped_defs = true
 disallow_untyped_defs = true
 ignore_missing_imports = true
-
