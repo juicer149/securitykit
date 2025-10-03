@@ -22,7 +22,7 @@ class ResultAnalyzer:
 
     def __init__(self, schema: dict[str, list[BenchValue]]):
         self.schema = schema
-        # In framtiden kan detta bytas ut mot annan strategi
+        # In the future, this can be replaced with another strategy.
         self._balance_strategy: Callable[[BenchmarkResult], float] = self._default_balance_score
 
     # ------------------------------------------------------------------

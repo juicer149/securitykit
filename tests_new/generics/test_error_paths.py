@@ -1,5 +1,4 @@
 import pytest
-import types
 
 from securitykit.hashing.algorithm import Algorithm
 from securitykit.hashing import algorithm_registry, policy_registry
@@ -10,11 +9,10 @@ from securitykit.exceptions import (
     HashingError,
     VerificationError,
 )
-from securitykit.password.validator import PasswordValidator
 
 
 def test_algorithm_delegate_hash_exception(monkeypatch):
-    # Byt implementationens hash_raw till att kasta -> fånga i façade
+    # Replace the implementation's hash_raw to throw -> catch in façade.
     algo = Algorithm("argon2")
     impl = algo.impl
 
@@ -55,7 +53,7 @@ def test_registry_unknown_policy():
 
 
 def test_registry_duplicate_algorithm(monkeypatch):
-    # Registrera temporär klass och försök igen för att trigga duplicate
+    # Register a temporary class and try again to trigger duplicate.
     from securitykit.hashing.algorithm_registry import register_algorithm
 
     @register_algorithm("tempdup")

@@ -5,6 +5,10 @@ import pytest
 from click.testing import CliRunner
 
 from securitykit.bench.cli import cli
+# TODO: This test depends on a private helper (_format_policy_line) from cli.py.
+# This breaks encapsulation and may cause brittleness if the function is refactored.
+# Consider moving the helper to a shared module (e.g. _format.py) or testing via cli() instead.
+
 
 
 @pytest.fixture
@@ -84,6 +88,7 @@ def test_cli_export_file(tmp_path, stub_runner_run):
 
 
 def test_cli_format_policy_line_edge_case():
+    # techdept: check this privete function to change 
     from securitykit.bench.cli import _format_policy_line
 
     @dataclass

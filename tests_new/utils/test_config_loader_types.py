@@ -1,6 +1,4 @@
-from typing import Optional, Union, List, Dict, Tuple
-
-import pytest
+from typing import Optional, Union
 
 from securitykit.utils.config_loader.types import normalize_type
 
@@ -12,10 +10,10 @@ def test_normalize_plain_types_identity():
 
 
 def test_normalize_list_generic_collapses_to_origin():
-    t = List[int]  # type: ignore
+    t = list[int]
     norm = normalize_type(t)
     # Expect origin list (not list[int]) or same object depending on implementation
-    assert norm in (list, List, t)
+    assert norm in (list, list, t)
 
 
 def test_normalize_optional_returns_union_or_origin():
@@ -32,20 +30,20 @@ def test_normalize_union_holds():
 
 
 def test_normalize_nested_list_union():
-    nested = List[Optional[int]]  # type: ignore
+    nested = list[Optional[int]]
     norm = normalize_type(nested)
     # Still should collapse to 'list' origin or remain unchanged on minimal impl
     assert norm in (list, nested)
 
 
 def test_normalize_tuple_generic():
-    tup = Tuple[int, str]  # type: ignore
+    tup = tuple[int, str]
     norm = normalize_type(tup)
     # Accept tuple or original representation
     assert norm in (tuple, tup)
 
 
 def test_normalize_dict_generic():
-    d = Dict[str, int]  # type: ignore
+    d = dict[str, int]
     norm = normalize_type(d)
     assert norm in (dict, d)
