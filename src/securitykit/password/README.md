@@ -1,6 +1,6 @@
 # SecurityKit Password
 
-The `securitykit.password` package provides **password policy definition** and **runtime validation**.  
+The `securitykit.password` package provides **password policy definition**, **complexity evaluation**, and **runtime validation**.
 It is deliberately decoupled from the hashing subsystem so that password quality is enforced *before* any hashing or benchmarking logic runs.
 
 ---
@@ -11,25 +11,29 @@ It is deliberately decoupled from the hashing subsystem so that password quality
 2. Components
 3. Quick Start
 4. Validation Rules
-5. Error Semantics
-6. Integration With Hashing (`PasswordSecurity`)
-7. Recommended Usage Pattern
-8. Extending / Custom Policies
-9. Testing Guidelines
-10. Security Considerations
-11. Roadmap
+5. Password Complexity Scoring
+6. Error Semantics
+7. Integration With Hashing
+8. Recommended Usage Pattern
+9. Extending / Custom Policies
+10. Testing Guidelines
+11. Security Considerations
+12. Roadmap
+13. Reference Summary
+14. Minimal End-to-End Example
 
 ---
 
 ## 1. Goals
 
-| Goal                | Description                                                           |
-|---------------------|-----------------------------------------------------------------------|
-| Explicit Policy     | All requirements defined in a single dataclass                        |
-| Deterministic       | No probabilistic scoring; strict boolean criteria                     |
-| Fast Feedback       | Fail early before hashing or persistence                              |
-| Composable          | Works standalone or via the high-level API (`securitykit.api`)        |
-| Observable          | Logs warnings when chosen parameters fall below recommended baselines |
+| Goal            | Description                                                    |
+| --------------- | -------------------------------------------------------------- |
+| Explicit Policy | All requirements defined in a single dataclass                 |
+| Deterministic   | No probabilistic scoring; strict boolean + bitmask criteria    |
+| Fast Feedback   | Fail early before hashing or persistence                       |
+| Composable      | Works standalone or via the high-level API (`securitykit.api`) |
+| Observable      | Logs warnings and strength info (never logs the password)      |
+| Configurable    | Fully environment-driven via `.env` or injected config         |
 
 ---
 
@@ -37,29 +41,92 @@ It is deliberately decoupled from the hashing subsystem so that password quality
 
 ### `PasswordPolicy` (`password/policy.py`)
 
-Dataclass specifying complexity requirements:
+Dataclass defining both **hard enforcement** and **soft complexity thresholds**.
 
-| Field             | Type  | Meaning                                                | Typical Default |
-|-------------------|-------|--------------------------------------------------------|-----------------|
-| `min_length`      | int   | Minimum number of characters                           | 12 (recommended) |
-| `require_upper`   | bool  | At least one uppercase A–Z                             | True            |
-| `require_lower`   | bool  | At least one lowercase a–z                             | True            |
-| `require_digit`   | bool  | At least one digit 0–9                                 | True            |
-| `require_special` | bool  | At least one non-alphanumeric symbol                   | True            |
+| Field                   | Type | Description                                       | Default |
+| ----------------------- | ---- | ------------------------------------------------- | ------- |
+| `min_length`            | int  | Hard minimum number of characters                 | 12      |
+| `require_upper`         | bool | Must contain at least one uppercase A–Z           | True    |
+| `require_lower`         | bool | Must contain at least one lowercase a–z           | True    |
+| `require_digit`         | bool | Must contain at least one digit 0–9               | True    |
+| `require_special`       | bool | Must contain at least one non-alphanumeric symbol | True    |
+| `complexity_rule`       | int  | Minimum number of fulfilled rules (1–5)           | 3       |
+| `complexity_min_length` | int  | Soft rule contributing to complexity score        | 12      |
 
 Validation in `__post_init__`:
-- Enforces a minimum lower bound (e.g. warns if `min_length` < recommended baseline).
-- Ensures values are of expected type (leveraging construction context).
+
+* Enforces numeric bounds and logs warnings if configuration is weak or excessive.
+* Validates that `complexity_rule` and `complexity_min_length` are within safe limits.
+
+All default constants are centralized in `securitykit.password.defaults`.
+
+---
+
+### `PasswordStrengthEvaluator` (`password/strength_evaluator.py`)
+
+Evaluates password strength and produces both a **bitmask** and human-readable feedback.
+
+**Features:**
+
+* Modular rules (`check_length_rule`, `check_regex_rules`)
+* Returns a structured dict:
+
+```python
+{
+    "strength": "Strong",
+    "fulfilled_rules": 4,
+    "missing": ["special"],
+    "mask": 0b11110,
+}
+```
+
+* Provides helpers:
+  * `count_fulfilled(mask)`
+  * `describe_strength(fulfilled)`
+  * `describe_missing(mask)`
+
+| Fulfilled | Strength Level |
+| --------- | -------------- |
+| 0         | Extremely Weak |
+| 1         | Very Weak      |
+| 2         | Weak           |
+| 3         | Moderate       |
+| 4         | Strong         |
+| 5         | Very Strong    |
+
+---
 
 ### `PasswordValidator` (`password/validator.py`)
 
-Applies a `PasswordPolicy` to actual password strings.
+Applies the policy and evaluator together.
 
-Method:
+Performs:
+
+1. Hard checks (min/max length and required character classes)
+2. Soft check (complexity bitmask threshold)
+3. Raises `InvalidPolicyConfig` when violations occur
+
+Performs a runtime type check and raises `TypeError` if `policy` is not a `PasswordPolicy`.
+
+Provides UX-friendly helpers:
+
+* `strength_label(password)`
+* `feedback(password)` → returns structured messages for UI frameworks (e.g. Flask-WTF).
+
+---
+
+### `PasswordFactory` (`password/factory.py`)
+
+Builds `PasswordPolicy` and `PasswordValidator` from configuration, typically using
+the prefix defined in `securitykit.config.PASSWORD_ENV_PREFIX` (`"PASSWORD_"`).
+
 ```python
-validate(password: str) -> None
+from securitykit.password.factory import PasswordFactory
+
+factory = PasswordFactory(config)
+policy = factory.get_policy()
+validator = factory.get_validator()
 ```
-Raises `InvalidPolicyConfig` if any rule is violated.
 
 ---
 
@@ -69,7 +136,7 @@ Raises `InvalidPolicyConfig` if any rule is violated.
 from securitykit.password import PasswordPolicy, PasswordValidator
 from securitykit.exceptions import InvalidPolicyConfig
 
-policy = PasswordPolicy(min_length=12, require_upper=True, require_digit=True)
+policy = PasswordPolicy(min_length=10, complexity_rule=3)
 validator = PasswordValidator(policy)
 
 validator.validate("StrongPass123!")   # OK
@@ -84,68 +151,90 @@ except InvalidPolicyConfig as e:
 
 ## 4. Validation Rules
 
-Given a policy, a candidate password must:
+| Rule       | Check                                                |
+| ---------- | ---------------------------------------------------- |
+| Length     | `len(password) >= min_length`                        |
+| Uppercase  | `[A-Z]` present if `require_upper`                   |
+| Lowercase  | `[a-z]` present if `require_lower`                   |
+| Digit      | `[0-9]` present if `require_digit`                   |
+| Special    | `[^A-Za-z0-9]` present if `require_special`          |
+| Complexity | At least `complexity_rule` of 5 conditions must pass |
 
-| Rule                    | Check Performed                                  |
-|-------------------------|--------------------------------------------------|
-| Length                  | `len(password) >= min_length`                    |
-| Uppercase requirement   | Presence of `[A-Z]` if `require_upper`           |
-| Lowercase requirement   | Presence of `[a-z]` if `require_lower`           |
-| Digit requirement       | Presence of `[0-9]` if `require_digit`           |
-| Special requirement     | Presence of at least one char `[^A-Za-z0-9]` if `require_special` |
-
-All failing conditions are accumulated in a single exception message for clarity.
-
----
-
-## 5. Error Semantics
-
-| Scenario                                   | Behavior / Exception                           |
-|--------------------------------------------|------------------------------------------------|
-| Policy constructed with weak parameters    | Warning logged (does not raise)                |
-| Password violates one or more constraints  | `InvalidPolicyConfig` raised                   |
-| Empty password                             | Treated like any violation (length + others)   |
-| Non-string input (should not happen)       | Upstream code should ensure string; else failure is explicit |
+The complexity threshold is soft but logged and enforced consistently.
 
 ---
 
-## 6. Integration With Hashing (`PasswordSecurity`)
+## 5. Password Complexity Scoring
 
-High-level flow when using `securitykit.api.password_security.PasswordSecurity`:
+SecurityKit computes a 5-bit complexity score:
 
-1. PasswordPolicy is built (from environment or defaults).
-2. Input password is validated.
-3. Hashing algorithm (e.g. Argon2) produces a digest.
-4. On verification, only hashing is performed (policy enforcement is usually skipped for historical stored passwords, but you can re‑validate if desired).
-5. Optionally call `rehash_password` if algorithm parameters evolved.
+1. Evaluate five signals:
+   * Minimum length (`complexity_min_length`)
+   * Uppercase
+   * Lowercase
+   * Digit
+   * Special character
+2. Each fulfilled rule sets a bit in a mask.
+3. Fulfilled bit count → strength level (0–5).
+4. `PASSWORD_COMPLEXITY_RULE` defines minimum acceptable score.
 
----
+Example log:
 
-## 7. Recommended Usage Pattern
-
-```python
-from securitykit.api.password_security import PasswordSecurity
-
-service = PasswordSecurity.from_env()
-
-# Register/login flow
-candidate = "NewUserPass#2024"
-digest = service.hash(candidate)             # Validates + hashes
-assert service.verify(candidate, digest)     # Returns True
+```
+[INFO] securitykit: Password evaluated: strength=STRONG, fulfilled=4/5, missing=['special']
 ```
 
-If you want to validate separately:
+This output can be reused in real-time UX feedback (e.g. front-end validation).
+
+---
+
+## 6. Error Semantics
+
+| Scenario                  | Behavior                                |
+| ------------------------- | --------------------------------------- |
+| Weak configuration        | Warning only                            |
+| Missing required class    | `InvalidPolicyConfig`                   |
+| Insufficient complexity   | `InvalidPolicyConfig` with missing list |
+| Empty / too long password | `InvalidPolicyConfig`                   |
+
+---
+
+## 7. Integration With Hashing
+
+Use via high-level API (`securitykit.api`):
 
 ```python
-validator = service.validator   # underlying PasswordValidator
-validator.validate(candidate)   # raises if not acceptable
+import securitykit.api as sk
+
+digest = sk.hash_password("Example#Pass123")
+assert sk.verify_password("Example#Pass123", digest)
+maybe_new = sk.rehash_password("Example#Pass123", digest)
+```
+
+Password policy enforcement happens *before* hashing to fail fast.
+
+---
+
+## 8. Recommended Usage Pattern
+
+```python
+from securitykit.password.factory import PasswordFactory
+
+env = {"PASSWORD_MIN_LENGTH": "12", "PASSWORD_COMPLEXITY_RULE": "3"}
+validator = PasswordFactory(env).get_validator()
+validator.validate("StrongPass1!")
+```
+
+For UI feedback:
+
+```python
+feedback = validator.feedback("StrongPass1!")
+print(feedback["message"])
 ```
 
 ---
 
-## 8. Extending / Custom Policies
-
-If you need additional fields (e.g. disallow whitespace, max length):
+## 9. Extending / Custom Policies
 
 ```python
 from dataclasses import dataclass
@@ -153,98 +242,80 @@ from securitykit.password.policy import PasswordPolicy
 
 @dataclass
 class ExtendedPasswordPolicy(PasswordPolicy):
-    disallow_space: bool = True
+    disallow_whitespace: bool = True
 
     def __post_init__(self):
         super().__post_init__()
-        if self.disallow_space and self.min_length < 8:
-            # Example extra constraint rule
+        if self.disallow_whitespace:
+            # Example custom constraint
             pass
 ```
 
-You can then wrap this in your own service or validator.  
-(Current high-level `PasswordSecurity` expects the default `PasswordPolicy`, so integration hooks would be needed for custom classes.)
+---
+
+## 10. Testing Guidelines
+
+| Test       | Purpose                                               |
+| ---------- | ----------------------------------------------------- |
+| Positive   | Verify strong passwords pass                          |
+| Negative   | Missing uppercase/digit/special fails                 |
+| Aggregate  | Complexity failures include missing list              |
+| Boundary   | Length at `min_length` passes, `min_length - 1` fails |
+| Complexity | Confirm bitmask count and strength label              |
 
 ---
 
-## 9. Testing Guidelines
+## 11. Security Considerations
 
-| Test Type                | What to Cover                                    |
-|--------------------------|--------------------------------------------------|
-| Positive validation      | Strong password passes all enabled rules         |
-| Negative cases           | Individually missing uppercase/digit/special     |
-| Aggregated failures      | A password failing multiple rules yields all in message |
-| Boundary length          | Exactly `min_length` passes; length − 1 fails     |
-| Policy warnings          | Construct with `min_length` below recommended baseline and assert log captured |
+| Concern          | Recommendation                                         |
+| ---------------- | ------------------------------------------------------ |
+| Minimum length   | Prefer ≥ 12 chars; ≥ 14 for sensitive contexts         |
+| Usability        | Tune `complexity_rule` instead of forcing all booleans |
+| Breach detection | Integrate with HIBP when available                     |
+| Logging          | Never log passwords; only strength summaries           |
+| Front-end UX     | Safe to expose evaluator outputs                       |
 
-Sample pytest snippet:
+---
+
+## 12. Roadmap
+
+| Feature                  | Status     |
+| ------------------------ | ---------- |
+| Bitmask-based evaluation | ✅ Done     |
+| Configurable thresholds  | ✅ Done     |
+| Live UX feedback         | ✅ Done     |
+| HIBP breach detection    | 🔜 Planned |
+| Entropy scoring (zxcvbn) | 🔜 Planned |
+| NIST/OWASP presets       | 🔜 Planned |
+
+---
+
+## 13. Reference Summary
+
+| Object                    | Path                                                                |
+| ------------------------- | ------------------------------------------------------------------- |
+| PasswordPolicy            | `securitykit.password.policy.PasswordPolicy`                        |
+| PasswordValidator         | `securitykit.password.validator.PasswordValidator`                  |
+| PasswordFactory           | `securitykit.password.factory.PasswordFactory`                      |
+| PasswordStrengthEvaluator | `securitykit.password.strength_evaluator.PasswordStrengthEvaluator` |
+| Exception                 | `securitykit.exceptions.InvalidPolicyConfig`                        |
+| Defaults                  | `securitykit.password.defaults`                                     |
+| Config prefix             | `securitykit.config.PASSWORD_ENV_PREFIX`                            |
+
+---
+
+## 14. Minimal End-to-End Example
 
 ```python
-import pytest
-from securitykit.password import PasswordPolicy, PasswordValidator
-from securitykit.exceptions import InvalidPolicyConfig
+import securitykit.api as sk
 
-def test_multiple_failures():
-    policy = PasswordPolicy(min_length=8, require_upper=True, require_digit=True)
-    validator = PasswordValidator(policy)
-    with pytest.raises(InvalidPolicyConfig) as exc:
-        validator.validate("abc")
-    assert "upper" in str(exc.value).lower()
-    assert "digit" in str(exc.value).lower()
-```
-
----
-
-## 10. Security Considerations
-
-| Concern                  | Guidance |
-|--------------------------|----------|
-| Minimum length           | Prefer 12+ (baseline), consider 14+ for higher assurance |
-| Composition requirements | Avoid excessive complexity if using passphrases; adapt to UX |
-| Reuse detection          | Not handled here; integrate with history service if needed |
-| Breach lists             | Not yet integrated (planned Have I Been Pwned support) |
-| Rate limiting            | Validator is fast; combine with external throttling on auth endpoints |
-| Logging                  | Never log raw passwords; only policy warnings are logged |
-
----
-
-## 11. Roadmap
-
-| Item                                | Status |
-|-------------------------------------|--------|
-| Policy presets (e.g. NIST profile)  | Planned |
-| Entropy / zxcvbn-style scoring      | Planned |
-| Breach (HIBP) integration           | Planned |
-| Config-driven optional checks (e.g. forbid whitespace) | Planned |
-| International character class support | Planned |
-
----
-
-## 12. Reference Summary
-
-| Object            | Import Path                                |
-|-------------------|--------------------------------------------|
-| PasswordPolicy    | `securitykit.password.PasswordPolicy`      |
-| PasswordValidator | `securitykit.password.PasswordValidator`   |
-| Exception raised  | `securitykit.exceptions.InvalidPolicyConfig` |
-
----
-
-## 13. Minimal End-to-End Example
-
-```python
-from securitykit.api.password_security import PasswordSecurity
-
-service = PasswordSecurity.from_env()
 password = "ExamplePass123!"
-digest = service.hash(password)
+digest = sk.hash_password(password)
 
-assert service.verify(password, digest) is True
-maybe_new_digest = service.rehash_password(password, digest)
-# either identical or a new hash if parameters changed
+assert sk.verify_password(password, digest)
+maybe_new_digest = sk.rehash_password(password, digest)
 ```
 
----
-
-The password module is intentionally small, focused, and immutable in behavior.  
-Complex orchestration (rehash, benchmarking, parameter tuning) lives in other subsystems, keeping policy logic itself simple and predictable.
+The password subsystem is intentionally small, declarative, and self-contained.
+Hashing, benchmarking, and rotation logic live elsewhere — this module’s sole purpose
+is to define what makes a password acceptable and to make that observable, testable, and configurable.
