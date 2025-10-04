@@ -97,3 +97,7 @@ class RegistryConflictError(SecurityKitError):
 
 class RehashDecisionError(SecurityKitError):
     """Failed to decide if rehashing is required."""
+
+# --- Password handling -------------------------------------------------------
+class PasswordValidationError(SecurityKitError):
+    """Raised when a candidate password fails runtime validation."""
