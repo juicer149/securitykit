@@ -2,10 +2,10 @@
 
 SecurityKit is a modular Python toolkit for secure, evolvable password handling:
 
-- Modern password hashing (Argon2id built‑in; bcrypt present / future algorithms pluggable)
-- Centralized pepper subsystem (config‑driven strategies, optional cryptographic HMAC mode)
+- Modern password hashing (algorithms opt‑in via extras; conditional registration)
+- Centralized pepper subsystem (config‑driven strategies, cryptographic HMAC mode)
 - Password complexity policies, strength evaluation, and validation
-- Deterministic config → object pipeline (env / mapping → validated dataclasses)
+- Deterministic config → object pipeline (env/mapping → validated dataclasses)
 - Benchmark framework for tuning hash parameters (manual or auto bootstrap)
 - Safe bootstrap with integrity protection (and PEPPER_* exclusion)
 - High test coverage, minimal global state, explicit extension points
@@ -15,23 +15,24 @@ SecurityKit is a modular Python toolkit for secure, evolvable password handling:
 ## Table of Contents
 
 1. Design Principles  
-2. High‑Level Architecture  
-3. Module Map  
-4. Pepper Subsystem Overview  
-5. Hashing Subsystem  
-6. Password Policies & Validation  
-7. Configuration Loader  
-8. Benchmarking & Auto Bootstrap  
-9. Public API (`securitykit.api`)  
-10. Quick Start Examples  
-11. Rehash Workflow  
-12. Extensibility (Adding Policies / Algorithms / Pepper Strategies)  
-13. Configuration Reference  
-14. Security Considerations  
-15. Testing & Development Workflow  
-16. Roadmap  
-17. Contributing  
-18. License  
+2. Installation  
+3. High‑Level Architecture  
+4. Module Map  
+5. Pepper Subsystem Overview  
+6. Hashing Subsystem  
+7. Password Policies & Validation  
+8. Configuration Loader  
+9. Benchmarking & Auto Bootstrap  
+10. Public API (`securitykit.api`)  
+11. Quick Start Examples  
+12. Rehash & Migration Workflows  
+13. Extensibility (Policies / Algorithms / Pepper)  
+14. Configuration Reference  
+15. Security Considerations  
+16. Testing & Development Workflow  
+17. Roadmap  
+18. Contributing  
+19. License  
 
 ---
 
@@ -39,29 +40,55 @@ SecurityKit is a modular Python toolkit for secure, evolvable password handling:
 
 | Principle        | Applied As |
 |------------------|------------|
-| Explicitness     | No implicit magic; registries & factories are opt‑in, discovery is idempotent |
-| Determinism      | Config parsing, benchmarking, pepper application are reproducible and pure |
+| Explicitness     | Registries & factories are opt‑in; discovery is idempotent |
+| Determinism      | Config parsing, benchmarking, pepper application are pure and reproducible |
 | Centralization   | Pepper logic lives in one subsystem (no duplicated per‑algorithm code) |
-| Isolation        | Global mutable state limited to small registries with snapshot restore for tests |
-| Extensibility    | New algorithms / policies / pepper strategies via lightweight decorators |
+| Isolation        | Global mutable state limited to small registries with snapshot/restore in tests |
+| Extensibility    | New algorithms/policies/pepper strategies via lightweight decorators |
 | Observability    | Warnings for weak params, structured logs, integrity hash on generated configs |
-| Fail Fast        | Aggregated configuration validation errors; no partially silent misconfig |
-| Testability      | Narrow façades, pure conversions, DRY fixtures, high coverage |
-| Evolvability     | `needs_rehash` + rehash workflow; parameters can be raised in production safely |
+| Fail Fast        | Aggregated configuration validation errors; no half‑configured states |
+| Testability      | Narrow façades, pure conversions, registry‑driven parametrization |
+| Evolvability     | `needs_rehash` + login‑time upgrade; safe parameter raises |
 
 ---
 
-## 2. High‑Level Architecture
+## 2. Installation
+
+- Python: >= 3.10
+
+Minimal core (no crypto libraries by default):
+```bash
+pip install securitykit
+```
+
+Opt‑in algorithms via extras:
+- Argon2: `pip install "securitykit[alg_argon2]"`
+- bcrypt: `pip install "securitykit[alg_bcrypt]"`
+- Werkzeug PBKDF2: `pip install "securitykit[alg_werkzeug]"`
+
+Development (run full test suite with all extras):
+```bash
+pip install -e ".[dev]"
+```
+
+Notes:
+- Algorithms register conditionally based on what’s installed; the registry reflects your environment.
+- In CI, install the dev extra to run the full algorithm matrix.
+
+---
+
+## 3. High‑Level Architecture
 
 ```
 securitykit/
   api/                   (Stable public surface; lazy symbol resolution)
   hashing/
-    algorithm.py         (Façade: pepper application + guards + error wrapping)
+    algorithm.py         (Façade: pepper + guards + error wrapping + cross-variant tolerance)
     algorithms/          (Raw implementations: hash_raw / verify_raw / needs_rehash)
     policies/            (Policy dataclasses + BENCH_SCHEMA)
     *registry.py         (Algorithm / policy registries)
     factory.py           (Config → policy + façade)
+    utils.py             (detect_variant and helpers)
   transform/pepper/      (Pepper strategies, builder, pipeline)
   password/              (Policy, Validator, Strength Evaluator, Factory)
   utils/config_loader/   (Deterministic config → object infrastructure)
@@ -69,36 +96,36 @@ securitykit/
   bootstrap.py           (Auto benchmark + integrity‑protected env generation)
 ```
 
-Typical data/control flow:
+Typical control flow:
 
 ```
-password -> PasswordValidator -> Pepper Pipeline (if enabled) -> Algorithm façade
-          -> underlying raw implementation (argon2, bcrypt, ...) -> encoded hash
+password → PasswordValidator → Pepper Pipeline (if enabled) → Algorithm façade
+         → algorithm hash_raw/verify_raw → underlying crypto library → encoded hash
 ```
 
 ---
 
-## 3. Module Map (Public vs. Internal)
+## 4. Module Map (Public vs. Internal)
 
 | Layer | Public Import | Notes |
 |-------|---------------|-------|
-| High-level API | `securitykit.api` | Stable; prefer for application code (lazy loader) |
-| Hash façade | `securitykit.hashing.Algorithm` | Direct use for custom flows |
-| Policies | `securitykit.hashing.policies.argon2.Argon2Policy` | Dataclasses (frozen) |
+| High‑level API | `securitykit.api` | Stable; lazy loader |
+| Hash façade | `securitykit.hashing.Algorithm` | Direct for custom flows |
+| Policies | `securitykit.hashing.policies.<variant>.*Policy` | Frozen dataclasses |
 | Password | `securitykit.password` (`PasswordPolicy`, `PasswordValidator`) | Complexity + validation |
-| Pepper | `securitykit.transform.pepper` | Normally implicit via façade |
+| Pepper | `securitykit.transform.pepper` | Usually implicit via façade |
 | Benchmark | `python -m securitykit.bench.cli` | Optional tuning/export |
 | Config loader | `securitykit.utils.config_loader` | Deterministic mapping→typed |
 | Bootstrap | `securitykit.bootstrap.ensure_env_config()` | One‑shot generation path |
 
 ---
 
-## 4. Pepper Subsystem Overview
+## 5. Pepper Subsystem Overview
 
-Config‑driven transformations applied before hashing:
+Config‑driven transformations applied exactly once before hashing:
 
-| Mode            | Transformation                               | Strength Category |
-|-----------------|----------------------------------------------|-------------------|
+| Mode            | Transformation                               | Strength |
+|-----------------|----------------------------------------------|----------|
 | `noop`          | identity                                     | – |
 | `prefix`        | `prefix + password`                          | Obfuscation |
 | `suffix`        | `password + suffix`                          | Obfuscation |
@@ -106,30 +133,35 @@ Config‑driven transformations applied before hashing:
 | `interleave`    | Insert token every N chars                   | Weak obfuscation |
 | `hmac`          | `hex(HMAC(key, password))`                   | Cryptographic |
 
-Only `hmac` provides cryptographic strengthening. Modes are mutually exclusive and applied exactly once (in the façade).
-Exported benchmark configs intentionally exclude all `PEPPER_*` keys.
+Only `hmac` provides cryptographic strengthening. Generated benchmark configs exclude all `PEPPER_*` keys on purpose.
 
 ---
 
-## 5. Hashing Subsystem
+## 6. Hashing Subsystem
 
-- Unified façade: `Algorithm(variant: str, policy: Policy, config: Mapping[str, str] | None = None)`
-  - Applies pepper (if enabled in config/env)
+- Unified façade: `Algorithm(variant: str, policy: Policy, config: Mapping[str, Any] | None = None)`
+  - Applies pepper (if enabled)
   - Rejects empty passwords
   - Delegates to raw implementation (`hash_raw`, `verify_raw`, `needs_rehash`)
-- Built‑in variants: Argon2 (`variant="argon2"`); bcrypt available (plug‑in)
-- Registries:
-  - `register_algorithm("argon2")`, `register_algorithm("bcrypt")`
-  - `register_policy("argon2")`, `register_policy("bcrypt")`
-- Policies can declare `BENCH_SCHEMA` for tuning (Cartesian enumeration)
+  - Centralizes cross‑variant tolerance (verifying a foreign hash returns `False`)
+- Built‑in variants (optional via extras):
+  - Argon2 (`variant="argon2"`) via `argon2‑cffi`
+  - bcrypt (`variant="bcrypt"`)
+  - scrypt (`variant="scrypt"`) via `hashlib.scrypt` (no extra dependency)
+  - Werkzeug PBKDF2 (`variant="werkzeug_pbkdf2"`)
+- Registries (case‑insensitive):
+  - `register_algorithm("argon2")`, `register_algorithm("bcrypt")`, etc.
+  - `register_policy("argon2")`, `register_policy("bcrypt")`, `register_policy("scrypt")`, `register_policy("werkzeug_pbkdf2")`
+- Policies may declare `BENCH_SCHEMA` for tuning (Cartesian enumeration)
 - Rehash logic:
-  - Argon2: delegated to `argon2.PasswordHasher.check_needs_rehash`
-  - bcrypt: compare cost factor vs. policy value
-- Benchmark timing neutralizes pepper to measure raw hash cost only
+  - Argon2: `PasswordHasher.check_needs_rehash`
+  - bcrypt: parse cost factor vs. policy rounds
+  - scrypt: decode `$scrypt$ln=...,r=...,p=...$...` and compare vs. policy
+  - Werkzeug PBKDF2: parse `pbkdf2:sha256:ITERATIONS$...` and compare vs. policy
 
 ---
 
-## 6. Password Policies & Validation
+## 7. Password Policies & Validation
 
 - `PasswordPolicy` dataclass fields (examples):
   - `min_length`
@@ -141,105 +173,109 @@ Exported benchmark configs intentionally exclude all `PEPPER_*` keys.
   1) hard checks (min/max, required classes), then  
   2) complexity threshold (≥ `complexity_rule` of 5)
 
-Violations raise a domain exception; invalid input is never hashed.
+Violations raise domain exceptions; invalid input is never hashed.
 
 ---
 
-## 7. Configuration Loader
+## 8. Configuration Loader
 
 Deterministic pipeline for mapping → typed object:
 
-Parsing heuristics (ordered):
+Parsing order (heuristic):
 1. Non‑strings unchanged
 2. Booleans: `true/false/on/off/yes/no`
-3. Sizes: `64k`, `32M`, `1G`, `8kb`, etc. (binary multiples)
+3. Sizes: `64k`, `32M`, `1G`, `8kb` (binary multiples)
 4. Int pattern
 5. Float pattern
 6. Lists: split on `,` or `;`
 7. Fallback: stripped string
 
-Primitive type enforcement second pass (int/float/bool) provides clear “Type mismatch” aggregation.
-`export_schema(cls, prefix)` produces structured metadata for docs/automation.
+Second pass enforces primitive types (int/float/bool) with aggregated errors.
+`export_schema(cls, prefix)` produces metadata for docs/automation.
 
 ---
 
-## 8. Benchmarking & Auto Bootstrap
+## 9. Benchmarking & Auto Bootstrap
 
 Benchmark flow:
 1. Enumerate combinations from `BENCH_SCHEMA`
 2. Time hashing (median/min/max/stddev)
 3. Filter candidates near target (± tolerance)
-4. Pick balanced (variance of normalized dimension positions) or fallback to closest
-5. Output best config + optionally export `.env`
+4. Pick balanced (variance of normalized positions) or closest
+5. Output best config and optionally export `.env`
 
 Auto bootstrap (`ensure_env_config()`):
-- Loads `.env` then `.env.local`
+- Loads `.env` and `.env.local`
 - Validates integrity hash if present
 - Checks required keys for selected variant (`HASH_VARIANT`)
-- If incomplete & `AUTO_BENCHMARK=1` & policy has `BENCH_SCHEMA` → run benchmark (pepper neutralized) → write `.env.local` with:
-  - Tuned parameters
-  - `GENERATED_BY`
-  - `GENERATED_SHA256`
+- If incomplete & `AUTO_BENCHMARK=1` & policy has `BENCH_SCHEMA`:
+  - run benchmark (pepper neutralized), write `.env.local` with:
+    - tuned parameters
+    - `GENERATED_BY`
+    - `GENERATED_SHA256`
 - Concurrency safe (file lock if `portalocker`)
 - Pepper keys are always excluded from generated files
 
 ---
 
-## 9. Public API (`securitykit.api`)
+## 10. Public API (`securitykit.api`)
 
 Lazy, stable export surface:
 
 | Symbol | Purpose |
 |--------|---------|
 | `hash_password` / `verify_password` / `rehash_password` | High‑level functional interface |
+| `authenticate_and_upgrade` | Login‑time verify + migrate (cross‑variant) |
 | `Algorithm` | Hash façade (advanced/manual flows) |
 | `HashingFactory` | Build façade from config mapping |
 | `register_algorithm` / `list_algorithms` / `get_algorithm_class` | Algorithm registry |
 | `register_policy` / `list_policies` / `get_policy_class` | Policy registry |
-| `Argon2Policy`, `BcryptPolicy` | Built‑in policies |
+| `Argon2Policy`, `BcryptPolicy`, `ScryptPolicy`, `WerkzeugPBKDF2Policy` | Built‑in policies |
 | `PasswordPolicy`, `PasswordValidator` | Password complexity subsystem |
 
-No legacy `PasswordSecurity` class — replaced by functional API + façade.
+Variants are conditionally registered based on installed extras.
 
 ---
 
-## 10. Quick Start Examples
+## 11. Quick Start Examples
 
 ### Hash + Verify (Functional)
-
 ```python
 from securitykit.api import hash_password, verify_password
-
 h = hash_password("StrongExample1!")
 assert verify_password("StrongExample1!", h)
 ```
 
-### Rehash Path
-
+### Rehash Path (same variant)
 ```python
 from securitykit.api import verify_password, rehash_password
-
 if verify_password(candidate, stored_hash):
     new_hash = rehash_password(candidate, stored_hash)
     if new_hash != stored_hash:
         persist_new_hash(new_hash)
 ```
 
-### Manual Façade + Policy
+### Cross‑Variant Login Upgrade (e.g., bcrypt → Argon2)
+```python
+from securitykit.api import authenticate_and_upgrade
+dest_cfg = {"HASH_VARIANT": "argon2", "ARGON2_TIME_COST": 3, "ARGON2_MEMORY_COST": 131072, "ARGON2_PARALLELISM": 2}
+ok, new_hash = authenticate_and_upgrade(password, user.password_hash, config=dest_cfg)
+if ok and new_hash is not None:
+    persist_new_hash(new_hash)
+```
 
+### Manual Façade + Policy
 ```python
 from securitykit.hashing import Algorithm
 from securitykit.hashing.policies.argon2 import Argon2Policy
 
 policy = Argon2Policy(time_cost=3, memory_cost=64*1024, parallelism=2)
-algo = Algorithm("argon2", policy)  # Pepper controlled by PEPPER_* config/env
-
+algo = Algorithm("argon2", policy)
 digest = algo.hash("Password123!")
 assert algo.verify(digest, "Password123!")
 ```
 
 ### Pepper (HMAC)
-
 ```python
 import os
 os.environ["PEPPER_MODE"] = "hmac"
@@ -250,91 +286,80 @@ h = hash_password("SensitivePass1!")
 
 ---
 
-## 11. Rehash Workflow
+## 12. Rehash & Migration Workflows
 
-When policy parameters change (e.g., raising Argon2 time cost), legacy hashes can be upgraded lazily:
+- Same‑variant policy raise:
+  1) Verify password
+  2) If `needs_rehash=True`, rehash and persist
 
-1. User logs in
-2. Verify password
-3. Call `rehash_password` — if parameters outdated → returns upgraded hash
-4. Persist new hash atomically
+- Cross‑variant migration (e.g., Werkzeug PBKDF2 → Argon2):
+  - Use `authenticate_and_upgrade(password, stored_hash, config=dest_cfg)`
+  - On success, a new hash for the destination variant is returned; persist it
 
-This amortizes migrations over active user logins.
+Façade ensures verifying a foreign variant returns `False` (no exceptions from underlying libs).
 
 ---
 
-## 12. Extensibility
+## 13. Extensibility (Policies / Algorithms / Pepper)
 
 ### New Policy
-
 ```python
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 from securitykit.hashing.policy_registry import register_policy
 
 @register_policy("scrypt")
 @dataclass(frozen=True)
 class ScryptPolicy:
     ENV_PREFIX: str = "SCRYPT_"
-    BENCH_SCHEMA = {"n": [2**14, 2**15], "r": [8, 16], "p": [1, 2]}
-    n: int = 2**14
+    BENCH_SCHEMA = {"n": [2**13, 2**14], "r": [8], "p": [1, 2]}
+    n: int = 2**13
     r: int = 8
     p: int = 1
-    def to_dict(self): return {"n": self.n, "r": self.r, "p": self.p}
-    def __post_init__(self):
-        if self.n < 2**14:
-            raise ValueError("n too low")
+    salt_length: int = 16
+    hash_length: int = 32
+    def to_dict(self): return asdict(self)
+    def __post_init__(self): ...
 ```
 
-### New Raw Algorithm
-
+### New Raw Algorithm (conditional registration)
 ```python
+try:
+    import some_lib
+    _AVAILABLE = True
+except Exception:
+    some_lib = None
+    _AVAILABLE = False
+
 from securitykit.hashing.algorithm_registry import register_algorithm
-from securitykit.hashing.policies.scrypt import ScryptPolicy
+from .policies.myalgo import MyAlgoPolicy
 
-@register_algorithm("scrypt")
-class Scrypt:
-    DEFAULT_POLICY_CLS = ScryptPolicy
-
-    def __init__(self, policy: ScryptPolicy | None = None):
-        policy = policy or ScryptPolicy()
-        self.policy = policy
-
-    def hash_raw(self, peppered_password: str) -> str:
-        # perform hashing using library scrypt(...)
-        ...
-
-    def verify_raw(self, stored_hash: str, peppered_password: str) -> bool:
-        ...
-
-    def needs_rehash(self, stored_hash: str) -> bool:
-        ...
+if _AVAILABLE:
+    @register_algorithm("myalgo")
+    class MyAlgo:
+        DEFAULT_POLICY_CLS = MyAlgoPolicy
+        def __init__(self, policy: MyAlgoPolicy | None = None): ...
+        def hash_raw(self, peppered_password: str) -> str: ...
+        def verify_raw(self, stored_hash: str, peppered_password: str) -> bool: ...
+        def needs_rehash(self, stored_hash: str) -> bool: ...
 ```
-
-The façade (`Algorithm`) handles pepper application & empty password guard; you implement only raw methods.
 
 ### New Pepper Strategy
-
 ```python
 from dataclasses import dataclass
-from typing import ClassVar
 from securitykit.transform.pepper.core import register_strategy
 
 @register_strategy("reverse")
 @dataclass(frozen=True)
 class ReverseStrategy:
-    name: ClassVar[str] = "reverse"
     def apply(self, password: str) -> str:
         return password[::-1]
 ```
 
-Use with `PEPPER_MODE=reverse`.
-
 ---
 
-## 13. Configuration Reference
+## 14. Configuration Reference
 
 Core hashing:
-
 ```
 HASH_VARIANT=argon2
 ARGON2_TIME_COST=3
@@ -343,36 +368,46 @@ ARGON2_PARALLELISM=2
 ARGON2_HASH_LENGTH=32
 ARGON2_SALT_LENGTH=16
 
-# Bcrypt
+# bcrypt
 BCRYPT_ROUNDS=12
+
+# scrypt
+SCRYPT_N=16384
+SCRYPT_R=8
+SCRYPT_P=1
+SCRYPT_SALT_LENGTH=16
+SCRYPT_HASH_LENGTH=32
+# OpenSSL memory cap (bytes); default 512 MiB if unset
+SCRYPT_MAXMEM=536870912
+
+# Werkzeug PBKDF2
+WERKZEUG_PBKDF2_METHOD=pbkdf2:sha256
+WERKZEUG_PBKDF2_ITERATIONS=260000
+WERKZEUG_PBKDF2_SALT_LENGTH=16
 ```
 
 Password policy:
-
 ```
 PASSWORD_MIN_LENGTH=12
 PASSWORD_REQUIRE_UPPER=true
 PASSWORD_REQUIRE_LOWER=true
 PASSWORD_REQUIRE_DIGIT=true
 PASSWORD_REQUIRE_SPECIAL=true
-
 # Soft complexity scoring
 PASSWORD_COMPLEXITY_RULE=3          # 1..5
-PASSWORD_COMPLEXITY_MIN_LENGTH=12   # contributes to score, not a hard min
+PASSWORD_COMPLEXITY_MIN_LENGTH=12   # contributes to score
 ```
 
 Pepper:
-
 ```
 PEPPER_ENABLED=true
 PEPPER_MODE=hmac
 PEPPER_HMAC_KEY=<secret>
 PEPPER_HMAC_ALGO=sha256
-# (Alternative modes: prefix, suffix, prefix_suffix, interleave + related keys)
+# Alternative modes: prefix, suffix, prefix_suffix, interleave (+ related keys)
 ```
 
 Bootstrap / Benchmark:
-
 ```
 AUTO_BENCHMARK=0
 AUTO_BENCHMARK_TARGET_MS=250
@@ -380,8 +415,7 @@ SECURITYKIT_DISABLE_BOOTSTRAP=0
 SECURITYKIT_ENV=development
 ```
 
-Generated metadata (bootstrap adds):
-
+Generated metadata (by bootstrap):
 ```
 GENERATED_BY=securitykit-bench vX.Y.Z
 GENERATED_SHA256=<integrity-hash>
@@ -389,70 +423,68 @@ GENERATED_SHA256=<integrity-hash>
 
 ---
 
-## 14. Security Considerations
+## 15. Security Considerations
 
 | Aspect | Treatment | Notes |
 |--------|-----------|-------|
-| Pepper | Central strategy; only HMAC cryptographically strong | Non‑HMAC modes are structured obfuscation |
+| Pepper | Central strategy; only HMAC is cryptographically strong | Non‑HMAC modes are structured obfuscation |
 | Hash Parameters | Policies validated; warnings for low settings | Raise values over time + rehash |
 | Rehash Safety | Conditional rehash after successful verify | Avoids forced migrations |
-| Integrity of Generated Config | SHA256 over key=value pairs | Warn on tampering |
-| Configuration Validation | Aggregated errors, typed enforcement | Prevent partial misconfig states |
-| Empty Passwords | Rejected by façade early | No silent hashing of empty inputs |
-| Logging | Parameter warnings & fallback events | Monitor for unexpected `noop` pepper |
+| Integrity of Generated Config | SHA256 over key=value lines | Warn on tampering |
+| Configuration Validation | Aggregated, typed errors | Prevent partial misconfig |
+| Empty Passwords | Rejected by façade | No silent empty hashes |
+| Cross‑Variant Verify | Central tolerance returns `False` | No leaking library exceptions |
+| Logging | Warnings for weak/legacy params | Operational visibility |
 
 ---
 
-## 15. Testing & Development Workflow
+## 16. Testing & Development Workflow
 
 Run everything:
-
 ```bash
 make test
 ```
 
-Typical loops:
-
+Common loops:
 ```bash
 pytest -k hashing -q
-pytest tests_new/bench/test_bench_components.py -q
 pytest --cov=src --cov-report=term-missing
 ```
 
-Test suite notes:
-- DRY fixtures in `tests_new/conftest.py` (env snapshot, log capture, block slow runner)
-- `tests_new/bench/conftest.py` provides tiny BENCH_SCHEMA and deterministic timing helpers
-- Benchmark tests stub timing (no slow runs). Real benchmarking is an opt‑in manual or CI stage.
+Notes:
+- DRY fixtures and registry snapshots make tests deterministic
+- Benchmark tests keep candidate grids small and timing stubs deterministic
+- Install `.[dev]` to run full algorithm matrix locally/CI
 
 ---
 
-## 16. Roadmap
+## 17. Roadmap
 
 | Item | Status | Notes |
 |------|--------|-------|
-| Scrypt implementation | Planned | Memory‑hard alternative |
+| scrypt (hashlib) | Shipped | Resource‑friendly defaults; `SCRYPT_MAXMEM` control |
+| Werkzeug PBKDF2 | Shipped | Optional extra; iterations parsed for rehash |
+| Login‑time migration | Shipped | `authenticate_and_upgrade` helper |
 | Pepper rotation (`PEPPER_VERSION`) | Planned | Dual verification window |
-| Multi‑hash migration helper | Planned | Legacy → Argon2/Bcrypt upgrade |
-| JSON / machine‑readable benchmark export | Planned | Automation & dashboards |
+| Weighted benchmark scoring | Planned | Heuristic tuning |
 | Observability hooks (metrics) | Planned | Hash counts, rehash events |
-| Async façade | Investigating | ASGI / non‑blocking integration |
-| Layered config sources (env + file + remote) | Planned | Declarative precedence |
-| Hardware advisory heuristics | Planned | Param recommendations based on host |
-| Per‑user derived pepper (HKDF) | Planned | Narrow compromise blast radius |
+| Async façade | Investigating | ASGI/non‑blocking |
+| Hardware advisory heuristics | Planned | Param guidance based on host |
+| Per‑user derived pepper (HKDF) | Planned | Minimize blast radius |
 
 ---
 
-## 17. Contributing
+## 18. Contributing
 
-1. Create a feature or fix branch: `feat/<topic>` or `fix/<issue>`
-2. Implement with tests (maintain/improve coverage)
-3. Document new public symbols (README or subsystem README)
-4. Ensure no new lint violations / type regressions
+1. Create a feature/fix branch: `feat/<topic>` or `fix/<issue>`
+2. Implement with tests (keep/improve coverage)
+3. Document new public symbols (README / subsystem docs)
+4. Run lint/type checks and tests locally
 5. Submit PR with rationale, benchmarks (if param changes), and migration notes
 
 ---
 
-## 18. License
+## 19. License
 
 MIT – see [LICENSE](./LICENSE).
 
@@ -465,6 +497,7 @@ MIT – see [LICENSE](./LICENSE).
 | Hash password | `from securitykit.api import hash_password` |
 | Verify password | `from securitykit.api import verify_password` |
 | Conditional rehash | `from securitykit.api import rehash_password` |
+| Login‑time upgrade | `from securitykit.api import authenticate_and_upgrade` |
 | Manual façade | `from securitykit.hashing import Algorithm` |
 | Policy class | `from securitykit.hashing.policies.argon2 import Argon2Policy` |
 | Password complexity | `from securitykit.password import PasswordPolicy, PasswordValidator` |
@@ -472,7 +505,5 @@ MIT – see [LICENSE](./LICENSE).
 | Bootstrap (manual) | `from securitykit.bootstrap import ensure_env_config` |
 | Config loader (advanced) | `from securitykit.utils.config_loader import ConfigLoader` |
 
----
-
-Questions / Ideas?  
-Open an issue or draft a PR with: environment constraints, target latency, variant(s), and pepper mode for tailored guidance.
+Questions or ideas?  
+Open an issue with your environment constraints, target latency, variant(s), and pepper mode for tailored guidance.

@@ -1,62 +1,65 @@
 from __future__ import annotations
+
 from typing import ClassVar
 
 try:
-    from argon2 import PasswordHasher  # type: ignore[import-not-found]
-    from argon2.exceptions import VerifyMismatchError  # type: ignore[import-not-found]
-except Exception as e:  # pragma: no cover
-    raise RuntimeError("argon2-cffi is required for Argon2 hashing") from e
+    from argon2 import PasswordHasher, exceptions as a2_exc  # type: ignore[reportMissingImports]
+    _A2_AVAILABLE = True
+except Exception:
+    PasswordHasher = None  # type: ignore[assignment]
+    a2_exc = None  # type: ignore[assignment]
+    _A2_AVAILABLE = False
 
 from securitykit.hashing.algorithm_registry import register_algorithm
 from securitykit.hashing.policies.argon2 import Argon2Policy
-from securitykit.exceptions import HashingError, VerificationError
-from securitykit.logging_config import logger
+from securitykit.exceptions import HashingError
 
 
-@register_algorithm("argon2")
-class Argon2:
-    """
-    Argon2id implementation expecting *already peppered* password input
-    for its raw methods. Pepper is applied by the Algorithm façade.
-    """
+if _A2_AVAILABLE:
 
-    DEFAULT_POLICY_CLS: ClassVar[type[Argon2Policy]] = Argon2Policy
+    @register_algorithm("argon2")
+    class Argon2:
+        """
+        Argon2 implementation via argon2-cffi PasswordHasher.
+        - hash_raw: raises HashingError on unexpected failures.
+        - verify_raw: returns False only for VerifyMismatchError; lets other errors bubble.
+        - needs_rehash: uses PasswordHasher.check_needs_rehash.
+        """
+        DEFAULT_POLICY_CLS: ClassVar[type[Argon2Policy]] = Argon2Policy
 
-    def __init__(self, policy: Argon2Policy | None = None) -> None:
-        policy = policy or Argon2Policy()
-        if not isinstance(policy, Argon2Policy):
-            raise TypeError("policy must be Argon2Policy")
+        def __init__(self, policy: Argon2Policy | None = None):
+            policy = policy or Argon2Policy()
+            if not isinstance(policy, Argon2Policy):
+                raise TypeError("policy must be Argon2Policy")
+            self.policy = policy
+            self._ph = PasswordHasher(
+                time_cost=policy.time_cost,
+                memory_cost=policy.memory_cost,
+                parallelism=policy.parallelism,
+                hash_len=policy.hash_length,
+            )
 
-        self.policy = policy
-        self._hasher = PasswordHasher(
-            time_cost=policy.time_cost,
-            memory_cost=policy.memory_cost,
-            parallelism=policy.parallelism,
-            hash_len=policy.hash_length,
-            salt_len=policy.salt_length,
-        )
+        def hash_raw(self, peppered_password: str) -> str:
+            if not peppered_password:
+                raise HashingError("Password cannot be empty")
+            try:
+                return self._ph.hash(peppered_password)
+            except Exception as e:
+                raise HashingError(f"Argon2 hash failed: {e}") from e
 
-    # New raw API
-    def hash_raw(self, peppered_password: str) -> str:
-        if not peppered_password:
-            raise HashingError("Password cannot be empty")
-        return self._hasher.hash(peppered_password)
+        def verify_raw(self, stored_hash: str, peppered_password: str) -> bool:
+            # False for password mismatch; other exceptions bubble to Algorithm (central handling).
+            if not stored_hash or not peppered_password:
+                return False
+            try:
+                return self._ph.verify(stored_hash, peppered_password)
+            except Exception as e:
+                if a2_exc is not None and isinstance(e, getattr(a2_exc, "VerifyMismatchError", Exception)):
+                    return False
+                raise
 
-    def verify_raw(self, stored_hash: str, peppered_password: str) -> bool:
-        if not stored_hash or not peppered_password:
-            return False
-        try:
-            return self._hasher.verify(stored_hash, peppered_password)
-        except VerifyMismatchError:
-            return False
-        except Exception as e:
-            raise VerificationError(f"Argon2 verification failed: {e}") from e
-
-    def needs_rehash(self, stored_hash: str) -> bool:
-        if not stored_hash:
-            return False
-        try:
-            return self._hasher.check_needs_rehash(stored_hash)
-        except Exception as e:
-            logger.error("Argon2 rehash check failed: %s", e)
-            return False
+        def needs_rehash(self, stored_hash: str) -> bool:
+            try:
+                return self._ph.check_needs_rehash(stored_hash)
+            except Exception:
+                return False
