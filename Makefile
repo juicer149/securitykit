@@ -10,7 +10,8 @@ PYTEST := $(VENV)/bin/pytest
 help:
 	@echo "Available commands:"
 	@echo "  make venv        Create virtual environment and install deps"
-	@echo "  make install     Install project in editable mode"
+	@echo "  make install     Install project in editable mode (dev + bench extras)"
+	@echo "  make install-core Install project in editable mode (core only)"
 	@echo "  make test        Run test suite with pytest"
 	@echo "  make lint        Run ruff linter"
 	@echo "  make format      Auto-format code with black"
@@ -20,19 +21,23 @@ help:
 
 venv:
 	python -m venv $(VENV)
-	$(PIP) install --upgrade pip
+	$(PIP) install --upgrade pip setuptools wheel
 
 install: venv
 	$(PIP) install -e ".[dev,bench]"
+
+# Optional: core-only install (no algorithm deps)
+install-core: venv
+	$(PIP) install -e .
 
 test:
 	$(PYTEST) -v --cov=src --cov-report=term-missing
 
 lint:
-	$(VENV)/bin/ruff check src tests
+	$(VENV)/bin/ruff check src tests_new
 
 format:
-	$(VENV)/bin/black src tests
+	$(VENV)/bin/black src tests_new
 
 typecheck:
 	$(VENV)/bin/mypy src

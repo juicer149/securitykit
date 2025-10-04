@@ -1,11 +1,17 @@
 from __future__ import annotations
+
 from typing import Any, Mapping
 import os
 
 from securitykit.hashing.algorithm_registry import get_algorithm_class
-from securitykit.exceptions import HashingError, VerificationError
+from securitykit.exceptions import (
+    HashingError,
+    VerificationError,
+    UnknownAlgorithmError,
+)
 from securitykit.logging_config import logger
 from securitykit.transform.pepper import apply_pepper
+from securitykit.hashing.utils import is_foreign_variant
 
 
 class Algorithm:
@@ -27,12 +33,24 @@ class Algorithm:
         config: Mapping[str, Any] | None = None,
         **kwargs: Any,
     ):
-        algo_cls = get_algorithm_class(variant)
+        v = variant.lower()
+        try:
+            algo_cls = get_algorithm_class(v)
+        except UnknownAlgorithmError as e:
+            # Helpful install hints when using minimal core + extras
+            hints = {
+                "argon2": "Install extra: pip install 'securitykit[alg_argon2]'",
+                "bcrypt": "Install extra: pip install 'securitykit[alg_bcrypt]'",
+                "werkzeug_pbkdf2": "Install extra: pip install 'securitykit[alg_werkzeug]'",
+            }
+            hint = f" {hints[v]}" if v in hints else ""
+            raise UnknownAlgorithmError(str(e) + hint) from e
+
         self._config = config or os.environ
         params: dict[str, Any] = {}
         # Pass policy through; do NOT pass pepper (all pepper centralized)
         self.impl = algo_cls(policy, **params, **kwargs)
-        self.variant = variant.lower()
+        self.variant = v
         self.policy = getattr(self.impl, "policy", None)
         logger.debug("Algorithm initialized variant=%s", self.variant)
 
@@ -49,9 +67,18 @@ class Algorithm:
         return self.impl.hash(peppered)  # type: ignore[no-any-return]
 
     def _verify_delegate(self, stored_hash: str, peppered: str) -> bool:
-        if hasattr(self.impl, "verify_raw"):
-            return self.impl.verify_raw(stored_hash, peppered)  # type: ignore[attr-defined]
-        return self.impl.verify(stored_hash, peppered)  # type: ignore[no-any-return]
+        try:
+            if hasattr(self.impl, "verify_raw"):
+                return self.impl.verify_raw(stored_hash, peppered)  # type: ignore[attr-defined]
+            return self.impl.verify(stored_hash, peppered)  # type: ignore[no-any-return]
+        except Exception:
+            # Central cross-variant tolerance:
+            # If the stored hash looks like another algorithm, treat as a non-match (False)
+            # instead of propagating an exception from the underlying lib.
+            if is_foreign_variant(stored_hash, self.variant):
+                return False
+            # Same-variant but error (e.g., corrupt hash) -> let outer layer wrap as VerificationError
+            raise
 
     # ---- public façade ----------------------------------------------------
 

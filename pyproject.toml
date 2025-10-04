@@ -1,24 +1,33 @@
 [project]
 name = "securitykit"
-version = "0.2.0"
+version = "0.3.0"
 description = "A modular security toolkit for password hashing and policies"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.10"
 
+# Minimal core: inga algoritmbibliotek i basen
 dependencies = [
-    "argon2-cffi>=21.3.0",
-    "bcrypt>=5.0.0",
     "python-dotenv>=1.0.0",
 ]
 
 [project.optional-dependencies]
+# Algoritm-extras (installera vid behov)
+alg_argon2 = ["argon2-cffi>=21.3.0"]
+alg_bcrypt = ["bcrypt>=5.0.0"]
+alg_werkzeug = ["Werkzeug>=2.3"]
+
+# Dev-miljö: inkludera alla extras så tester körs lokalt/CI
 dev = [
     "pytest>=8.0",
     "pytest-cov>=4.1",
-    "mypy>=1.10",
+    "mypy>=1.8",
     "black>=24.0",
     "ruff>=0.5",
+    "argon2-cffi>=21.3.0",
+    "bcrypt>=5.0.0",
+    "Werkzeug>=2.3",
 ]
+
 bench = [
     "rich>=13.0",
     "click>=8.1",
@@ -36,10 +45,10 @@ testpaths = ["tests_new"]
 
 [tool.black]
 line-length = 88
-target-version = ["py312"]
+target-version = ["py310"]
 
 [tool.mypy]
-python_version = "3.12"
+python_version = "3.10"
 check_untyped_defs = true
 disallow_untyped_defs = true
 ignore_missing_imports = true

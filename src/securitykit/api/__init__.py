@@ -9,6 +9,7 @@ performance and avoiding unnecessary side effects.
 """
 
 from __future__ import annotations
+
 from typing import Any, Tuple
 import importlib
 
@@ -32,6 +33,8 @@ __all__ = [
     # Policy classes
     "Argon2Policy",
     "BcryptPolicy",
+    "ScryptPolicy",
+    "WerkzeugPBKDF2Policy",
 
     # Password system
     "PasswordPolicy",
@@ -41,6 +44,9 @@ __all__ = [
     "hash_password",
     "verify_password",
     "rehash_password",
+
+    # Migration/upgrade helper
+    "authenticate_and_upgrade",
 ]
 
 
@@ -62,9 +68,11 @@ _MAPPING: dict[str, Tuple[str, str]] = {
     "list_policies": ("securitykit.hashing.policy_registry", "list_policies"),
     "get_policy_class": ("securitykit.hashing.policy_registry", "get_policy_class"),
 
-    # Policies
+    # Policies (available regardless of extras; registration happens via discovery)
     "Argon2Policy": ("securitykit.hashing.policies.argon2", "Argon2Policy"),
     "BcryptPolicy": ("securitykit.hashing.policies.bcrypt", "BcryptPolicy"),
+    "ScryptPolicy": ("securitykit.hashing.policies.scrypt", "ScryptPolicy"),
+    "WerkzeugPBKDF2Policy": ("securitykit.hashing.policies.wz_pbkdf2", "WerkzeugPBKDF2Policy"),
 
     # Password policy and validation
     "PasswordPolicy": ("securitykit.password.policy", "PasswordPolicy"),
@@ -74,6 +82,9 @@ _MAPPING: dict[str, Tuple[str, str]] = {
     "hash_password": ("securitykit.api.password_security", "hash_password"),
     "verify_password": ("securitykit.api.password_security", "verify_password"),
     "rehash_password": ("securitykit.api.password_security", "rehash_password"),
+
+    # Migration/upgrade helper (cross-variant + policy upgrade)
+    "authenticate_and_upgrade": ("securitykit.api.migration", "authenticate_and_upgrade"),
 }
 
 
