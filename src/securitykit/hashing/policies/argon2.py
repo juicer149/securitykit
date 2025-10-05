@@ -1,37 +1,57 @@
+"""
+securitykit.hashing.policies.argon2
+-----------------------------------
+
+Argon2Policy encapsulates configuration, bounds, and diagnostics
+for the Argon2 hashing algorithm (argon2-cffi backend).
+
+This version:
+  • Performs runtime diagnostics using CapabilityInfo from diagnostics registry
+  • Exposes unified attributes used by PepperFactory:
+        - supports_internal_pepper (bool)
+        - version (str)
+  • Emits clear warnings when the installed library is outdated
+  • Validates and warns about configuration bounds
+"""
+
 from __future__ import annotations
 from dataclasses import dataclass, asdict
 from typing import ClassVar, Any
+
 from securitykit.hashing.policy_registry import register_policy
 from securitykit.hashing.interfaces import BenchValue
 from securitykit.exceptions import InvalidPolicyConfig
 from securitykit.logging_config import logger
 
-# Technical minimums
+# --- Parameter bounds ------------------------------------------------------
+
 ARGON2_MIN_TIME_COST = 1
 ARGON2_MIN_MEMORY = 8 * 1024  # 8 MiB
-ARGON2_MIN_PARALLELISM = 1 
+ARGON2_MIN_PARALLELISM = 1
 ARGON2_MIN_HASH_LENGTH = 16
 ARGON2_MIN_SALT_LENGTH = 16
 
-# --- Recommended baseline (OWASP / Community) --- 
 ARGON2_RECOMMENDED_TIME_COST = 2
 ARGON2_RECOMMENDED_MEMORY = 64 * 1024  # 64 MiB
 ARGON2_RECOMMENDED_PARALLELISM = 1
 ARGON2_RECOMMENDED_HASH_LENGTH = 32
 
-# --- Upper limits (warnings only) ---
-ARGON2_MAX_TIME_COST = 6  # Above this = performance / DoS risk
-ARGON2_MAX_MEMORY = 256 * 1024  # 256 MiB = unusually high for web apps
-ARGON2_MAX_PARALLELISM = 4  # >4 can cause resource strain
+ARGON2_MAX_TIME_COST = 6
+ARGON2_MAX_MEMORY = 256 * 1024  # 256 MiB
+ARGON2_MAX_PARALLELISM = 4
 
 
 @register_policy("argon2")
 @dataclass(frozen=True)
 class Argon2Policy:
+    """
+    Defines Argon2 configuration parameters and diagnostic state.
+    """
+
     ENV_PREFIX: ClassVar[str] = "ARGON2_"
     BENCH_SCHEMA: ClassVar[dict[str, list[BenchValue]]] = {
-        "time_cost":   [1, 2, 3, 4, 5, 6],
-        "memory_cost": [8*1024, 16*1024, 32*1024, 64*1024, 128*1024, 256*1024],
+        "time_cost": [1, 2, 3, 4, 5, 6],
+        "memory_cost": [8 * 1024, 16 * 1024, 32 * 1024, 64 * 1024, 128 * 1024, 256 * 1024],
         "parallelism": [1, 2, 3, 4],
     }
 
@@ -41,11 +61,47 @@ class Argon2Policy:
     hash_length: int = ARGON2_RECOMMENDED_HASH_LENGTH
     salt_length: int = ARGON2_MIN_SALT_LENGTH
 
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+    supports_internal_pepper: bool = False
+    version: str = "unknown"
 
     def __post_init__(self):
-        # --- Hard bounds ---
+        # ------------------------------------------------------------------
+        # Lazy import to avoid circular dependency (registry <-> diagnostics)
+        # ------------------------------------------------------------------
+        try:
+            from securitykit.hashing.registry import get_diagnostic
+        except ImportError:
+            logger.error("Unable to import get_diagnostic from hashing.registry.")
+            return
+
+        # ------------------------------------------------------------------
+        # Load diagnostics snapshot (cached globally)
+        # ------------------------------------------------------------------
+        diag = get_diagnostic("argon2")
+        if diag:
+            object.__setattr__(self, "version", diag.version)
+            object.__setattr__(
+                self,
+                "supports_internal_pepper",
+                bool(diag.extra and diag.extra.get("supports_secret", False)),
+            )
+
+        if not self.supports_internal_pepper:
+            logger.warning(
+                "Argon2 (argon2-cffi %s) does not support native secret parameter. "
+                "SecurityKit will apply external HMAC peppering instead. "
+                "Upgrade to argon2-cffi>=21.3.0 for native keyed mode.",
+                self.version,
+            )
+        else:
+            logger.debug(
+                "Argon2 supports internal secret parameter (argon2-cffi %s).",
+                self.version,
+            )
+
+        # ------------------------------------------------------------------
+        # Bounds validation
+        # ------------------------------------------------------------------
         if self.time_cost < ARGON2_MIN_TIME_COST:
             raise InvalidPolicyConfig(f"time_cost must be >= {ARGON2_MIN_TIME_COST}")
         if self.memory_cost < ARGON2_MIN_MEMORY:
@@ -57,20 +113,29 @@ class Argon2Policy:
         if self.salt_length < ARGON2_MIN_SALT_LENGTH:
             raise InvalidPolicyConfig(f"salt_length must be >= {ARGON2_MIN_SALT_LENGTH}")
 
-        # --- Warnings: below recommended baselines ---
+        # ------------------------------------------------------------------
+        # Recommendations and warnings
+        # ------------------------------------------------------------------
         if self.time_cost < ARGON2_RECOMMENDED_TIME_COST:
-            logger.warning("Argon2 time_cost %d below recommended (%d)", self.time_cost, ARGON2_RECOMMENDED_TIME_COST)
+            logger.warning(
+                "Argon2 time_cost %d below recommended (%d)",
+                self.time_cost,
+                ARGON2_RECOMMENDED_TIME_COST,
+            )
         if self.memory_cost < ARGON2_RECOMMENDED_MEMORY:
-            logger.warning("Argon2 memory_cost %d below recommended (%d)", self.memory_cost, ARGON2_RECOMMENDED_MEMORY)
-        if self.parallelism <= ARGON2_RECOMMENDED_PARALLELISM:
-            logger.warning("Argon2 parallelism %d at/below recommended (%d)", self.parallelism, ARGON2_RECOMMENDED_PARALLELISM)
-        if self.hash_length < ARGON2_RECOMMENDED_HASH_LENGTH:
-            logger.warning("Argon2 hash_length %d below recommended (%d)", self.hash_length, ARGON2_RECOMMENDED_HASH_LENGTH)
+            logger.warning(
+                "Argon2 memory_cost %d below recommended (%d)",
+                self.memory_cost,
+                ARGON2_RECOMMENDED_MEMORY,
+            )
 
-        # --- Warnings: above maximum recommended ---
+        # ------------------------------------------------------------------
+        # Upper limit checks
+        # ------------------------------------------------------------------
         if self.time_cost > ARGON2_MAX_TIME_COST:
             logger.warning("Argon2 time_cost %d very high (> %d)", self.time_cost, ARGON2_MAX_TIME_COST)
         if self.memory_cost > ARGON2_MAX_MEMORY:
             logger.warning("Argon2 memory_cost %d very high (> %d)", self.memory_cost, ARGON2_MAX_MEMORY)
-        if self.parallelism > ARGON2_MAX_PARALLELISM:
-            logger.warning("Argon2 parallelism %d unusually high (> %d)", self.parallelism, ARGON2_MAX_PARALLELISM)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)

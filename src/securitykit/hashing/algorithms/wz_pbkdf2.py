@@ -10,9 +10,28 @@ except Exception:
     check_password_hash = None  # type: ignore[assignment]
     _WZ_AVAILABLE = False
 
+from importlib.metadata import version as _dist_version, PackageNotFoundError  # NEW
+
 from securitykit.hashing.algorithm_registry import register_algorithm
 from securitykit.hashing.policies.wz_pbkdf2 import WerkzeugPBKDF2Policy
 from securitykit.exceptions import HashingError
+from securitykit.hashing.capabilities import CapabilityInfo
+
+
+def get_werkzeug_pbkdf2_diagnostics() -> CapabilityInfo:
+    """
+    Return diagnostics for Werkzeug PBKDF2 support.
+    """
+    try:
+        try:
+            ver = _dist_version("Werkzeug")
+        except PackageNotFoundError:
+            # Fallback: import werkzeug package and read __version__
+            import werkzeug  # type: ignore
+            ver = getattr(werkzeug, "__version__", "unknown")
+        return CapabilityInfo(available=True, version=ver, extra={"supports_secret": False})
+    except Exception:
+        return CapabilityInfo(available=False, version="unknown", extra={"supports_secret": False})
 
 
 if _WZ_AVAILABLE:

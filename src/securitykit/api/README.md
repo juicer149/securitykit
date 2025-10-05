@@ -10,21 +10,21 @@ The API module is lazy‑loaded: symbols are resolved on demand to keep imports 
 
 ## Table of Contents
 
-1. Goals  
-2. Exported Symbols  
-3. Architecture (API Layer)  
-4. Functional Convenience API  
-5. Algorithm Façade & Factory  
-6. Pepper Configuration (`PEPPER_*`)  
-7. Rehash and Upgrade Workflow  
-8. Error & Return Semantics  
-9. Configuration Examples  
-10. End‑to‑End Example  
-11. When to Use Lower Layers  
-12. Testing Patterns  
-13. Migration (Removed / Changed)  
-14. Roadmap  
-15. Summary  
+1. Goals
+2. Exported Symbols
+3. Architecture (API Layer)
+4. Functional Convenience API
+5. Algorithm Façade & Factory
+6. Pepper Configuration (`PEPPER_*`)
+7. Rehash and Upgrade Workflow
+8. Error & Return Semantics
+9. Configuration Examples
+10. End‑to‑End Example
+11. When to Use Lower Layers
+12. Testing Patterns
+13. Migration (Removed / Changed)
+14. Roadmap
+15. Summary
 
 ---
 
@@ -72,7 +72,7 @@ Application
   ↓
 securitykit.api (hash_password / verify_password / rehash_password / authenticate_and_upgrade)
   ↓
-Algorithm façade (pepper application + guards + error wrapping + cross-variant tolerance)
+Algorithm façade (pepper application + guards + error handling + cross-variant tolerance)
   ↓
 Concrete implementation (hash_raw / verify_raw / needs_rehash)
   ↓
@@ -201,6 +201,7 @@ Behavior:
 | Unknown algorithm variant | `UnknownAlgorithmError` during construction |
 | Invalid config type/value | `ConfigValidationError` (from config loader) |
 | Pepper config missing key in `hmac` mode | Pepper‑specific configuration exception |
+| Weak password on verify | By default NOT gated; set `PASSWORD_GATE_ON_VERIFY=true` to apply gate at verify |
 
 This separation makes it clear when credentials are wrong versus when the system or configuration is incorrect.
 
@@ -225,6 +226,9 @@ PEPPER_HMAC_KEY=ChangeMeStrong
 PASSWORD_MIN_LENGTH=10
 PASSWORD_REQUIRE_UPPER=true
 PASSWORD_REQUIRE_SPECIAL=true
+
+# Optional: apply PasswordGate also on verify (default: false)
+# PASSWORD_GATE_ON_VERIFY=true
 ```
 
 scrypt:
@@ -304,6 +308,7 @@ if ok and new_hash is not None:
 | Pepper difference | Compare hash with vs. without `PEPPER_*` |
 | Edge empty password | Expect exception on hashing |
 | Config validation | Wrong type → `ConfigValidationError` |
+| Gate on verify | Toggle `PASSWORD_GATE_ON_VERIFY` to assert behavior |
 
 ---
 

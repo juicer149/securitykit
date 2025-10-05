@@ -1,38 +1,38 @@
 # SecurityKit Hashing
 
-> Modern, extensible, test‑friendly password hashing with validated policies,
-> pluggable algorithms, benchmarking support, and configuration‑driven construction.
+Modern, extensible, diagnostics‑aware password hashing with validated policies, pluggable algorithms, centralized pepper, and configuration‑driven construction.
 
-Highlights:
-- Minimal core package; algorithms are opt‑in via extras (conditional registration).
-- Frozen policy dataclasses with validation (no runtime inheritance).
-- Registries store raw classes (type), case‑insensitive variant keys.
-- Central pepper subsystem (strategy + config; no per‑algo pepper args).
-- Algorithm façade applies pepper, wraps errors, and centralizes cross‑variant tolerance.
-- Rehash semantics per algorithm; optional benchmarking schemas for tuning.
-- Login‑time migration helper for seamless algorithm/policy upgrades.
+Highlights
+- Minimal core; algorithms are opt‑in via extras (conditional registration).
+- Frozen-style policies with validation and optional benchmark schemas.
+- Diagnostics snapshot exposes availability, versions, and capabilities (e.g., supports_secret).
+- Central pepper subsystem; no per‑algorithm pepper code.
+- Algorithm façade applies pepper once, adds guards, error wrapping, and cross‑variant tolerance.
+- Rehash semantics per algorithm; login‑time migration helper for upgrades.
+- Test‑friendly design: discovery, registries, and config loaders.
 
 ---
 
 ## Contents
 
-1. Goals & Non‑Goals  
-2. Installation  
-3. Architecture Overview  
-4. Core Concepts  
-5. Public Modules  
-6. Quick Start  
-7. Configuration & Environment Keys  
-8. Rehash Semantics  
-9. Pepper Subsystem  
-10. Benchmark Interoperability  
-11. Extending (Policies & Algorithms)  
-12. Error & Exception Model  
-13. Testing Strategy & Patterns  
-14. Best Practices & Security Notes  
-15. Migration / “What Changed”  
-16. Roadmap  
-17. Appendix: Minimal Manual Flow  
+1. Goals & Non‑Goals
+2. Installation
+3. Architecture Overview
+4. Discovery & Diagnostics
+5. Core Concepts
+6. Public Modules
+7. Quick Start
+8. Configuration & Environment Keys
+9. Rehash Semantics
+10. Pepper Subsystem (How It Integrates)
+11. Benchmark Interoperability
+12. Extending (Policies & Algorithms)
+13. Error & Exception Model
+14. Testing Strategy & Patterns
+15. Best Practices & Security Notes
+16. Migration / “What Changed”
+17. Roadmap
+18. Appendix: Minimal Manual Flow
 
 ---
 
@@ -40,22 +40,21 @@ Highlights:
 
 | Goal | Description |
 |------|-------------|
-| Uniform Interface | One façade (`Algorithm`) exposing `hash`, `verify`, `needs_rehash` |
-| Explicit Configuration | Deterministic construction from env or mapping |
-| Safety | Policy dataclasses validate bounds in `__post_init__` |
-| Extensibility | New algorithms / policies via decorators and discovery |
-| Benchmark Ready | Optional `BENCH_SCHEMA` enumerates tuning space |
-| Structural Typing | Avoid inheritance complexity and fragile generics |
-| Testability | Registry‑driven dynamic parametrization |
-| Runtime Clarity | Registries store raw `type` only |
-| Central Pepper | One subsystem; zero duplication in implementations |
-| Minimal Core | Algorithms are optional extras with conditional registration |
+| Uniform Interface | One façade (`Algorithm`) exposing `hash`, `verify`, `needs_rehash`. |
+| Explicit Configuration | Deterministic construction from env or mapping. |
+| Safety | Policy dataclasses validate bounds and emit warnings. |
+| Extensibility | New algorithms/policies via decorators and discovery. |
+| Diagnostics‑Aware | Capability probes drive behavior (e.g., native pepper vs HMAC). |
+| Central Pepper | Strategy‑based, variant‑agnostic pepper handling. |
+| Benchmark Ready | Optional `BENCH_SCHEMA` enumerates tuning space. |
+| Testability | Registry‑driven, late‑bound diagnostics, config loader. |
+| Minimal Core | Algorithms are optional extras with conditional registration. |
 
-Non‑Goals:
-- Universal hash decoder beyond what’s needed for needs_rehash and variant detection
-- Forcing environment as the only configuration source
-- Hiding algorithm parameters
-- Per‑algorithm pepper behavior
+Non‑Goals
+- Universal hash decoder beyond variant detection and parameter checks for rehash.
+- Enforcing environment as the only config source (mappings are supported).
+- Hiding algorithm parameters (policies are explicit).
+- Per‑algorithm pepper paths (centralized instead).
 
 ---
 
@@ -63,7 +62,7 @@ Non‑Goals:
 
 - Python: >= 3.10
 
-Minimal core (no crypto libs by default):
+Core (no crypto libs by default):
 ```bash
 pip install securitykit
 ```
@@ -73,14 +72,14 @@ Opt‑in algorithms via extras:
 - bcrypt: `pip install "securitykit[alg_bcrypt]"`
 - Werkzeug PBKDF2: `pip install "securitykit[alg_werkzeug]"`
 
-Development (runs full test suite with all extras):
+Development (run full suite):
 ```bash
 pip install -e ".[dev]"
 ```
 
-Notes:
+Notes
 - Algorithms register conditionally at import time based on what’s installed.
-- In CI, install dev extra to run all algorithm tests.
+- CI: install the dev extra to test all variants.
 
 ---
 
@@ -98,7 +97,7 @@ Notes:
              |
              v
        +------------+
-       | Algorithm  |  (façade: pepper + guards + errors + cross-variant tolerance)
+       | Algorithm  |  (façade: pepper + guards + diagnostics + errors + cross-variant tolerance)
        +------+-----+
               |
               v
@@ -111,58 +110,75 @@ Notes:
   Underlying libs (argon2-cffi, bcrypt, werkzeug.security, hashlib.scrypt)
 ```
 
-Discovery:
-- `load_all()` imports `hashing/policies/*` and `hashing/algorithms/*` exactly once
-- Registrations happen via decorators
-- Snapshots allow restore in tests/reloads
-
-Conditional registration:
-- Algorithm modules register only if their third‑party dependency is importable.
-- Registry contents reflect what’s installed (e.g., `werkzeug_pbkdf2` is absent if Werkzeug isn’t installed).
+Key points
+- The façade constructs a diagnostics‑aware pepper plan and delegates to the concrete implementation.
+- Implementations are thin: `hash_raw`, `verify_raw`, `needs_rehash`.
+- Policies capture cost parameters and read diagnostics as needed.
 
 ---
 
-## 4. Core Concepts
+## 4. Discovery & Diagnostics
+
+Discovery
+- `load_all()` imports `hashing/policies/*` and `hashing/algorithms/*` exactly once.
+- Registration happens via decorators; registries hold raw classes by case‑insensitive variant keys.
+- Snapshots allow restore in tests/reloads.
+
+Diagnostics snapshot (capabilities)
+- Centralized in `hashing/diagnostics.py` and cached by `hashing/registry.load_all()`.
+- Each algorithm provides a small probe returning `CapabilityInfo`:
+  - `available`: bool
+  - `version`: str
+  - `extra`: dict of capabilities (e.g., `{"supports_secret": True}` for Argon2 keyed mode).
+- Policies (e.g., Argon2) can read their diagnostic entry to expose `version` and booleans such as `supports_internal_pepper`.
+
+Pepper integration uses late‑bound diagnostics:
+- `PepperFactory` imports `securitykit.hashing.registry` at runtime and calls `get_diagnostic(variant)` to decide native secret vs HMAC prehash.
+
+---
+
+## 5. Core Concepts
 
 | Concept | Description |
-|---------|-------------|
-| Policy | Frozen dataclass with parameters, validation, optional `BENCH_SCHEMA` |
-| Algorithm Implementation | Class exposing `hash_raw`, `verify_raw`, `needs_rehash` |
-| Algorithm Façade | Applies pepper, handles empty password, wraps errors, centralizes cross‑variant tolerance |
-| Pepper Subsystem | Strategy registry + pipeline; configured via `PEPPER_*` |
-| Registry | Case‑insensitive variant → class mapping (`type`) |
-| BENCH_SCHEMA | Enumerates parameter search grid for benchmarking |
-| Variant Detection | Best‑effort detection via `utils.detect_variant(stored_hash)` |
-| Login‑time Migration | Minimal helper `authenticate_and_upgrade(password, stored_hash, config)` |
+|--------|-------------|
+| Policy | Dataclass with parameters, validation, and optional `BENCH_SCHEMA`. |
+| CapabilityInfo | Diagnostics for a variant: `available`, `version`, `extra` capabilities. |
+| Algorithm Implementation | The minimal core for a variant: `hash_raw`, `verify_raw`, `needs_rehash`. |
+| Algorithm Façade | Resolves implementation, builds pepper plan, applies guards, wraps errors, tolerates cross‑variant. |
+| Pepper Subsystem | Strategy registry + builder + factory. The façade applies pepper exactly once. |
+| Registry | Case‑insensitive name → class mapping (`type`), populated on discovery. |
+| Variant Detection | Best‑effort via `hashing.utils.detect_variant(stored_hash)`. |
+| Migration Helper | `authenticate_and_upgrade(password, stored_hash, config)` for login‑time upgrades. |
 
 ---
 
-## 5. Public Modules
+## 6. Public Modules
 
 | Module | Purpose |
 |--------|---------|
-| `hashing/algorithm.py` | Façade (pepper + delegation + error wrapping + cross‑variant tolerance) |
-| `hashing/algorithms/argon2.py` | Argon2id implementation (argon2‑cffi) |
-| `hashing/algorithms/bcrypt.py` | bcrypt implementation |
-| `hashing/algorithms/scrypt.py` | scrypt implementation (hashlib.scrypt) |
-| `hashing/algorithms/wz_pbkdf2.py` | Werkzeug PBKDF2 implementation |
-| `hashing/policies/*` | Policy dataclasses + tuning schemas |
-| `hashing/factory.py` | Config → policy + façade |
-| `hashing/algorithm_registry.py` | Algorithm registry |
-| `hashing/policy_registry.py` | Policy registry |
-| `hashing/registry.py` | Discovery (`load_all`) |
-| `hashing/utils.py` | `detect_variant`, helpers |
-| `api/migration.py` | `authenticate_and_upgrade` (login‑time migration) |
-| `transform/pepper/*` | Pepper strategies/pipeline |
-| `utils/config_loader/*` | Deterministic config → objects |
-| `bench/*` | Optional benchmarking subsystem |
-| `password/*` | Password policy + validator |
+| `hashing/algorithm.py` | Façade: pepper + delegation + error wrapping + cross‑variant tolerance. |
+| `hashing/algorithms/argon2.py` | Argon2id implementation (argon2‑cffi), supports native secret when available. |
+| `hashing/algorithms/bcrypt.py` | bcrypt implementation. |
+| `hashing/algorithms/scrypt.py` | scrypt (hashlib.scrypt) with custom encoding. |
+| `hashing/algorithms/wz_pbkdf2.py` | Werkzeug PBKDF2 implementation. |
+| `hashing/policies/*` | Policy dataclasses + tuning schemas; some read diagnostics. |
+| `hashing/factory.py` | Config → policy + façade; forwards mapping to the façade (pepper access). |
+| `hashing/algorithm_registry.py` | Algorithm registry. |
+| `hashing/policy_registry.py` | Policy registry. |
+| `hashing/diagnostics.py` | CapabilityInfo probes (centralized). |
+| `hashing/registry.py` | Discovery (`load_all`) + cached diagnostics snapshot + `get_diagnostic`. |
+| `hashing/utils.py` | `detect_variant`, helpers. |
+| `api/migration.py` | `authenticate_and_upgrade` (login‑time migration). |
+| `transform/pepper/*` | Pepper strategies, builder, pipeline, and diagnostics‑aware factory. |
+| `utils/config_loader/*` | Deterministic config → objects. |
+| `bench/*` | Optional benchmarking subsystem. |
+| `password/*` | Password policy + validator + gate (validated before hashing at API level). |
 
 ---
 
-## 6. Quick Start
+## 7. Quick Start
 
-Programmatic configuration:
+Programmatic configuration
 ```python
 from securitykit.hashing import Algorithm
 from securitykit.hashing.policies.argon2 import Argon2Policy
@@ -177,9 +193,8 @@ if algo.needs_rehash(digest):
     digest = algo.hash("CorrectHorseBatteryStaple!")
 ```
 
-Factory + pepper:
+Factory + pepper
 ```python
-import os
 from securitykit.hashing.factory import HashingFactory
 
 config = {
@@ -194,7 +209,7 @@ h = algo.hash("UserPass123!")
 assert algo.verify(h, "UserPass123!")
 ```
 
-Login‑time migration/upgrade:
+Login‑time migration/upgrade
 ```python
 from securitykit.api.migration import authenticate_and_upgrade
 
@@ -212,14 +227,14 @@ if ok and new_hash is not None:
 
 ---
 
-## 7. Configuration & Environment Keys
+## 8. Configuration & Environment Keys
 
 Convention: `{VARIANT}_{PARAM}` uppercased (e.g., `ARGON2_TIME_COST`).
 
-Common:
+Common
 - `HASH_VARIANT`: `argon2` | `bcrypt` | `scrypt` | `werkzeug_pbkdf2`
 
-Argon2 (argon2‑cffi):
+Argon2 (argon2‑cffi)
 ```
 ARGON2_TIME_COST=3
 ARGON2_MEMORY_COST=65536
@@ -228,12 +243,12 @@ ARGON2_HASH_LENGTH=32
 ARGON2_SALT_LENGTH=16
 ```
 
-bcrypt:
+bcrypt
 ```
 BCRYPT_ROUNDS=12
 ```
 
-scrypt (hashlib):
+scrypt (hashlib)
 ```
 SCRYPT_N=16384           # power of two
 SCRYPT_R=8
@@ -244,70 +259,62 @@ SCRYPT_HASH_LENGTH=32
 SCRYPT_MAXMEM=536870912
 ```
 
-Werkzeug PBKDF2:
+Werkzeug PBKDF2
 ```
 WERKZEUG_PBKDF2_METHOD=pbkdf2:sha256
 WERKZEUG_PBKDF2_ITERATIONS=260000
 WERKZEUG_PBKDF2_SALT_LENGTH=16
 ```
 
-Pepper (see section 9):
+Pepper (section 10)
 ```
+PEPPER_ENABLED=true
 PEPPER_MODE=hmac
 PEPPER_HMAC_KEY=SuperStrongPepperKey!!!
 # optional: PEPPER_HMAC_ALGO=sha512
 ```
 
-Behavior:
+Behavior
 - Missing optional keys → policy defaults (warning logged).
-- Invalid values → immediate exception from policy constructors or config loader.
-- Provide a mapping (dict) to `HashingFactory` for explicit runtime configuration (recommended for apps).
+- Invalid values → exceptions from policy constructors or the config loader.
+- Prefer passing a mapping (dict) to `HashingFactory` for explicit runtime configuration.
 
 ---
 
-## 8. Rehash Semantics
+## 9. Rehash Semantics
 
 | Algorithm | Mechanism |
-|-----------|-----------|
+|----------|-----------|
 | Argon2 | `argon2.PasswordHasher.check_needs_rehash(stored_hash)` |
-| bcrypt | Parse cost factor from `$2b$CC$...` and compare vs policy rounds |
-| scrypt | Decode `$scrypt$...` params; compare logN/r/p and hash length vs policy |
-| Werkzeug PBKDF2 | Parse `pbkdf2:sha256:ITERATIONS$...`; compare iterations vs policy |
+| bcrypt | Parse cost factor from `$2b$CC$...`; compare vs policy rounds. |
+| scrypt | Decode `$scrypt$...` params; compare logN/r/p and hash length vs policy. |
+| Werkzeug PBKDF2 | Parse `pbkdf2:sha256:ITERATIONS$...`; compare iterations vs policy. |
 
-Notes:
+Notes
 - Malformed hashes: `needs_rehash` returns `False` (conservative) and logs when appropriate.
-- Pepper changes alone do not trigger `needs_rehash`; treat pepper rotation as a deliberate migration step (see section 15 and login‑time migration).
+- Pepper changes alone do not trigger `needs_rehash`; treat pepper rotation as a deliberate migration step (see migration helper).
 
 ---
 
-## 9. Pepper Subsystem
+## 10. Pepper Subsystem (How It Integrates)
 
-Properties:
-- Centralized (façade applies once before hashing/verification).
-- Strategy‑based: `noop`, `prefix`, `suffix`, `prefix_suffix`, `interleave`, `hmac`.
-- Configured exclusively via `PEPPER_*` keys.
+Properties
+- Centralized and variant‑agnostic; the façade applies pepper exactly once.
+- Strategy modes: `noop`, `prefix`, `suffix`, `prefix_suffix`, `interleave`, `hmac`.
+- Configured via `PEPPER_*` keys.
 
-Keys:
+Diagnostics‑aware HMAC behavior
+- If `get_diagnostic(variant).extra['supports_secret']` is True (e.g., Argon2 with native keyed mode), `PepperFactory` passes the key as `algo_kwargs={'secret': <bytes>}` and does not prehash.
+- Otherwise, `PepperFactory` builds an external HMAC prehash pipeline.
+- Other non‑HMAC modes are built as prehash pipelines regardless of variant.
 
-| Key | Default | Description |
-|-----|---------|-------------|
-| `PEPPER_ENABLED` | `true` | Master switch |
-| `PEPPER_MODE` | `noop` | Strategy |
-| `PEPPER_SECRET` | (empty) | Base secret for simple modes |
-| `PEPPER_PREFIX` / `PEPPER_SUFFIX` | (empty) | Overrides for prefix/suffix |
-| `PEPPER_INTERLEAVE_FREQ` | `0` | Insert token every N chars (≤0 noop) |
-| `PEPPER_INTERLEAVE_TOKEN` | (empty) | Token for interleave |
-| `PEPPER_HMAC_KEY` | (empty) | Required for `hmac` |
-| `PEPPER_HMAC_ALGO` | `sha256` | HMAC hash function |
-
-Only `hmac` provides cryptographic strengthening; others are structured concatenations.
+See the dedicated [Pepper README](../transform/pepper/README.md) for details and security guidance.
 
 ---
 
-## 10. Benchmark Interoperability
+## 11. Benchmark Interoperability
 
 Policies can define a `BENCH_SCHEMA`, e.g.:
-
 ```python
 BENCH_SCHEMA = {
     "time_cost": [2, 3, 4],
@@ -316,18 +323,19 @@ BENCH_SCHEMA = {
 }
 ```
 
-Process:
-- Enumerate candidates → run timing → score → select → emit config.
-- CI: reduce candidate lists for speed.
+Process
+- Enumerate candidates → time → score → select → emit config.
+- CI: reduce candidates for speed.
 
 ---
 
-## 11. Extending (Policies & Algorithms)
+## 12. Extending (Policies & Algorithms)
 
-Policy skeleton:
+Policy skeleton
 ```python
 from dataclasses import dataclass, asdict
 from securitykit.hashing.policy_registry import register_policy
+from securitykit.exceptions import InvalidPolicyConfig
 
 @register_policy("scrypt")
 @dataclass(frozen=True)
@@ -342,10 +350,11 @@ class ScryptPolicy:
     def to_dict(self): return asdict(self)
     def __post_init__(self):
         # validate ranges, powers of two, warn on low settings, etc.
-        ...
+        if self.n & (self.n - 1) != 0:
+            raise InvalidPolicyConfig("n must be a power of two")
 ```
 
-Algorithm skeleton (conditional registration):
+Algorithm skeleton (conditional registration)
 ```python
 try:
     import some_lib
@@ -371,95 +380,96 @@ if _AVAILABLE:
         def needs_rehash(self, stored_hash: str) -> bool: ...
 ```
 
-The façade (Algorithm) handles pepper, empty password guard, cross‑variant tolerance, and error wrapping.
+The façade handles pepper, empty password guard, cross‑variant tolerance, and error wrapping.
 
 ---
 
-## 12. Error & Exception Model
+## 13. Error & Exception Model
 
 | Exception | Source | Meaning |
 |-----------|--------|---------|
-| `HashingError` | Façade/delegate | Hash input invalid / delegate failure |
-| `VerificationError` | Façade/delegate | Unexpected verify failure (not just mismatch) |
-| `InvalidPolicyConfig` / `ValueError` | Policy init | Invalid parameter |
-| `UnknownAlgorithmError` | Registry | Unknown variant (might be missing extra) |
-| `UnknownPolicyError` | Registry | Unknown policy |
-| `ConfigValidationError` | Config loader | Conversion/type errors |
-| `PepperConfigError` | Pepper builder | Missing required secret/key |
-| `PepperStrategyConstructionError` | Strategy build | Unsupported mode/params |
+| `HashingError` | Façade/delegate | Hashing failure or invalid input. |
+| `VerificationError` | Façade/delegate | Unexpected verify failure (not a plain mismatch). |
+| `InvalidPolicyConfig` | Policy init | Invalid parameter or constraint. |
+| `UnknownAlgorithmError` | Registry | Unknown variant (missing extra). |
+| `UnknownPolicyError` | Registry | Unknown policy. |
+| `ConfigValidationError` | Config loader | Conversion/type errors. |
+| `PepperConfigError` | Pepper builder | Missing required secret/key in `hmac` mode. |
+| `PepperStrategyConstructionError` | Strategy build | Unsupported mode/params. |
 
-Mismatches return `False`. Cross‑variant verification errors (e.g., trying to verify an Argon2 hash with bcrypt) are handled centrally by the façade:
-- It detects a foreign variant via `utils.detect_variant`.
-- Returns `False` instead of surfacing an exception from the underlying library.
-- Same‑variant malformed hashes still surface as `VerificationError` (diagnostic).
+Mismatches
+- Return `False`.
+- Cross‑variant attempts are detected via `utils.detect_variant` and coerced to `False` (no exception).
+- Same‑variant malformed hashes surface as `VerificationError` for diagnostics.
 
 ---
 
-## 13. Testing Strategy & Patterns
+## 14. Testing Strategy & Patterns
 
 | Test Type | Target |
 |-----------|--------|
-| Roundtrip | `hash` / `verify` including mismatch |
-| Pepper | Hash diff & cross verify failure |
-| Param Encoding | Parse Argon2 / bcrypt / scrypt / Werkzeug parameters from hashes |
-| Rehash | Old policy → stronger policy for all supported variants |
-| Cross‑Variant Verify | Wrong variant returns False (no exceptions) |
-| Migration | Login‑time authenticate+upgrade across all pairs |
-| Error Paths | Empty password, delegate exceptions, malformed encodings |
-| Config Loader | Conversions + type mismatches |
-| Bench Smoke | Non‑empty schema enumeration; bounded candidates |
+| Roundtrip | `hash` / `verify` including mismatch. |
+| Pepper | Hash differences + cross‑verify failure across keys/modes. |
+| Param Encoding | Parse Argon2/bcrypt/scrypt/Werkzeug params from hashes. |
+| Rehash | Old policy → stronger policy for installed variants. |
+| Cross‑Variant Verify | Wrong variant returns `False` (no exception). |
+| Migration | `authenticate_and_upgrade` across variant pairs. |
+| Error Paths | Empty password, delegate exceptions, malformed encodings. |
+| Config Loader | Conversions + type mismatches. |
+| Bench Smoke | Non‑empty schema enumeration; bounded candidates. |
 
-Tests parameterize over the registry; variants not installed (extras missing) are skipped automatically.
+Variants not installed are skipped automatically.
 
 ---
 
-## 14. Best Practices & Security Notes
+## 15. Best Practices & Security Notes
 
 | Practice | Reason |
 |----------|--------|
-| Frozen policies | Prevent silent runtime downgrades |
-| Central pepper | Consistency & reduced errors |
-| Prefer HMAC pepper | Cryptographic binding to input |
-| Lazy rehash on login | Zero downtime policy/variant upgrades |
-| Rotate pepper keys | Control blast radius and migration |
-| Isolate pepper key | Keep separate from DB backups |
-| Log warnings | Visibility on weak/legacy settings |
-| Pin crypto versions | Avoid semantic shifts across upgrades |
+| Immutable (frozen) policies | Prevent silent runtime downgrades. |
+| Central pepper | Consistency and reduced implementation bugs. |
+| Prefer HMAC pepper | Cryptographic binding to input. |
+| Lazy rehash on login | Zero‑downtime policy/variant upgrades. |
+| Rotate pepper keys | Control blast radius; plan migration windows. |
+| Isolate pepper key | Keep separate from DB backups/exports. |
+| Log warnings | Visibility on weak/legacy settings. |
+| Pin crypto versions | Avoid semantic shifts across upgrades. |
 
 ---
 
-## 15. Migration / “What Changed”
+## 16. Migration / “What Changed”
 
 | Old | New |
 |-----|-----|
-| Algorithms in core deps | Minimal core; algorithms as optional extras |
-| Eager registrations | Conditional registration based on installed extras |
-| Per‑algo pepper | Central pepper pipeline (`PEPPER_*`) |
-| Implementation `hash()` | `hash_raw`; façade applies pepper and guards |
-| Cross‑variant raises | Central tolerance: foreign variant → `False` |
-| No login migration | `authenticate_and_upgrade(password, stored_hash, config)` helper |
-| No variant detection | `utils.detect_variant(stored_hash)` |
-| scrypt memory errors | `SCRYPT_MAXMEM` default (512 MiB), tunable via env |
-| PBKDF2 env keys unclear | `WERKZEUG_PBKDF2_*` config documented |
+| Algorithms in core deps | Minimal core; algorithms as opt‑in extras. |
+| Eager registrations | Conditional on installed extras. |
+| Per‑algo pepper | Central pepper pipeline (`PEPPER_*`). |
+| Implementation `hash()` | `hash_raw`; façade applies pepper and guards. |
+| Cross‑variant raises | Central tolerance: foreign variant → `False`. |
+| No login migration | `authenticate_and_upgrade(...)` helper. |
+| No variant diagnostics | Capability snapshot with `supports_secret`, `version`, etc. |
+| scrypt memory errors | `SCRYPT_MAXMEM` default (512 MiB), configurable. |
+| Unclear PBKDF2 keys | `WERKZEUG_PBKDF2_*` documented and enforced. |
 
 ---
 
-## 16. Roadmap
+## 17. Roadmap
 
 | Item | Status | Notes |
 |------|--------|-------|
-| scrypt implementation | Shipped | Resource‑friendly defaults; `SCRYPT_MAXMEM` control |
-| Werkzeug PBKDF2 | Shipped | Optional extra; iterations parsed for rehash |
-| Login‑time migration helper | Shipped | `authenticate_and_upgrade` |
-| Pepper rotation tooling | Planned | Versioned keys / dual verify |
-| Weighted benchmark scoring | Planned | Heuristic tuning |
-| Advisory heuristics | Planned | Hardware‑aware guidance |
-| Hash format compatibility | Investigating | Legacy variants/encodings |
-| Per‑user HKDF pepper | Planned | Blast radius reduction |
+| scrypt implementation | Shipped | Resource‑friendly defaults; `SCRYPT_MAXMEM` control. |
+| Werkzeug PBKDF2 | Shipped | Optional extra; iterations parsed for rehash. |
+| Login‑time migration helper | Shipped | `authenticate_and_upgrade`. |
+| Diagnostics deepening | Planned | Additional capability flags per variant. |
+| Pepper rotation tooling | Planned | Versioned keys / dual verify. |
+| Weighted benchmark scoring | Planned | Heuristic tuning. |
+| Advisory heuristics | Planned | Hardware‑aware guidance. |
+| Hash format compatibility | Investigating | Legacy encodings. |
+| Per‑user HKDF pepper | Planned | Blast radius reduction. |
 
 ---
 
-## 17. Appendix: Minimal Manual Flow
+## 18. Appendix: Minimal Manual Flow
 
 ```python
 from securitykit.hashing.factory import HashingFactory
@@ -492,12 +502,10 @@ if ok and new_hash is not None:
     persist(new_hash)
 ```
 
----
-
 Questions?
-- Please open an issue and include:
+- Open an issue and include:
   - Variants in use and installed extras
-  - Current policy values and target latency window
+  - Policy values and target latency window
   - Hardware/memory constraints (note `SCRYPT_MAXMEM`)
   - Pepper mode and rotation plan
-  - Any migration goals (e.g., bcrypt → Argon2)
+  - Migration goals (e.g., bcrypt → Argon2)

@@ -10,6 +10,24 @@ from typing import ClassVar, Tuple
 from securitykit.hashing.algorithm_registry import register_algorithm
 from securitykit.hashing.policies.scrypt import ScryptPolicy
 from securitykit.exceptions import HashingError
+from securitykit.hashing.capabilities import CapabilityInfo
+
+
+def get_scrypt_diagnostics() -> CapabilityInfo:
+    """
+    Return diagnostics for scrypt support in hashlib/OpenSSL.
+    """
+    try:
+        import ssl
+        supported = hasattr(hashlib, "scrypt")
+        openssl_ver = getattr(ssl, "OPENSSL_VERSION", None)
+        return CapabilityInfo(
+            available=supported,
+            version="builtin" if supported else "unknown",
+            extra={"supports_secret": False, "openssl_version": openssl_ver},
+        )
+    except Exception:
+        return CapabilityInfo(available=False, version="unknown", extra={"supports_secret": False})
 
 
 @register_algorithm("scrypt")

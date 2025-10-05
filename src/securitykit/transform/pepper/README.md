@@ -1,40 +1,41 @@
-# Pepper Subsystem
+# Pepper Subsystem (Diagnostics‑Aware)
 
-Centralized secret‑driven transformation applied to a plaintext password **before**
-it is passed to any hashing algorithm. Algorithms (Argon2, bcrypt, …) receive an
-already “peppered” value; they are not pepper‑aware.
+Centralized, configuration‑driven transformation applied to a plaintext password before it is passed to any hashing algorithm. Algorithms (Argon2, bcrypt, etc.) do not handle pepper directly — the PepperFactory determines how and where to apply it based on runtime capabilities (diagnostics).
+
+The design is variant‑agnostic, late‑bound to the diagnostics registry, and integrates seamlessly with the Algorithm façade.
 
 ---
 
 ## Table of Contents
 
-1. Rationale  
-2. Quick Start  
-3. Configuration (`PEPPER_*`)  
-4. Strategies  
-5. HMAC Mode Notes  
-6. Interleave Mode Notes  
-7. Examples  
-8. Integration with Hashing Façade  
-9. Caching & Lazy Loading  
-10. Error Handling & Fallback Matrix  
-11. Security Guidance  
-12. Extending (Custom Strategy)  
-13. Deployment Checklist  
-14. Roadmap  
+1. Rationale
+2. Quick Start
+3. Configuration (`PEPPER_*`)
+4. Strategy Overview
+5. HMAC Mode and Native Secret
+6. Interleave Mode
+7. Examples
+8. Integration with the Hashing Façade
+9. Diagnostics & Capability Awareness
+10. Caching and Lazy Loading
+11. Error Handling and Fallback Behavior
+12. Security Guidance
+13. Extending (Custom Strategy)
+14. Deployment Checklist
+15. Roadmap
 
 ---
 
 ## 1. Rationale
 
-| Goal                  | Effect                                                         |
-|-----------------------|----------------------------------------------------------------|
-| Single Responsibility | Hash algorithms focus strictly on hashing / verification      |
-| Config Driven         | Behavior controlled exclusively by `PEPPER_*` keys            |
-| Extensible            | Add a strategy without touching existing code                 |
-| Testable              | Deterministic pure strategies; simple unit tests              |
-| Security Optionality  | Provide a cryptographic option (HMAC) when required           |
-| Central Enforcement   | Façade guarantees exactly one pepper application per request |
+| Goal                   | Description                                                                                               |
+| ---------------------- | --------------------------------------------------------------------------------------------------------- |
+| Central Decision Point | One place (the factory) decides how and when pepper is applied.                                           |
+| Config‑Driven          | Behavior controlled exclusively via `PEPPER_*` keys.                                                      |
+| Diagnostics‑Aware      | Uses algorithm diagnostics (`extra['supports_secret']`) to choose native vs external peppering.           |
+| Extensible             | Add new strategies without touching existing algorithms.                                                  |
+| Safe Defaults          | For UI pipelines, failures degrade to noop with logging; for factory construction, invalid config raises. |
+| Auditable              | All fallbacks and warnings go through centralized logging.                                                |
 
 ---
 
@@ -42,166 +43,200 @@ already “peppered” value; they are not pepper‑aware.
 
 ```python
 import os
-from securitykit.transform.pepper import apply_pepper
+from securitykit.transform.pepper.factory import PepperFactory
 
-os.environ["PEPPER_MODE"] = "prefix_suffix"
-os.environ["PEPPER_PREFIX"] = "pre$"
-os.environ["PEPPER_SUFFIX"] = "$suf"
+os.environ.update({
+    "PEPPER_MODE": "hmac",
+    "PEPPER_HMAC_KEY": "SuperStrongPepperKey!!!",
+})
 
-pw = "CorrectHorseBatteryStaple!"
-peppered = apply_pepper(pw, os.environ)
-# "pre$CorrectHorseBatteryStaple!$suf"
+# Example for Argon2 (diagnostics-driven)
+app = PepperFactory.from_config("argon2", os.environ)
+# If Argon2 supports native secret:
+# PepperApplication(prehash_pipeline=None, algo_kwargs={'secret': b'SuperStrongPepperKey!!!'})
+
+# Example for bcrypt (no native secret support):
+app_bcrypt = PepperFactory.from_config("bcrypt", os.environ)
+# PepperApplication(prehash_pipeline=<callable>, algo_kwargs={})
 ```
 
-Normally you do NOT call `apply_pepper` manually—`Algorithm.hash()` / `Algorithm.verify()`
-invoke it internally.
+If the installed Argon2 version supports the native `secret` parameter (argon2‑cffi ≥ 21.3.0), the pepper key is injected directly into the algorithm. Otherwise, SecurityKit transparently applies an HMAC prehash before hashing.
+
+Note: In normal application flows you will not call `PepperFactory` directly; the `Algorithm` façade does this automatically on construction.
 
 ---
 
 ## 3. Configuration (`PEPPER_*`)
 
-| Variable                | Type (parsed) | Default  | Description                                                         |
-|-------------------------|---------------|----------|---------------------------------------------------------------------|
-| `PEPPER_ENABLED`        | bool          | `true`   | Master switch                                                       |
-| `PEPPER_MODE`           | str           | `noop`   | `noop|prefix|suffix|prefix_suffix|interleave|hmac`                  |
-| `PEPPER_SECRET`         | str           | `""`     | Base secret fallback for simple modes                               |
-| `PEPPER_PREFIX`         | str           | `""`     | Override prefix (prefix/prefix_suffix modes)                        |
-| `PEPPER_SUFFIX`         | str           | `""`     | Override suffix (suffix/prefix_suffix modes)                        |
-| `PEPPER_INTERLEAVE_FREQ`| int           | `0`      | Insert token every N chars (≤0 ⇒ noop)                              |
-| `PEPPER_INTERLEAVE_TOKEN`| str          | `""`     | Token sequence (fallback: `PEPPER_SECRET`)                          |
-| `PEPPER_HMAC_KEY`       | str           | `""`     | Required for `hmac` mode                                            |
-| `PEPPER_HMAC_ALGO`      | str           | `sha256` | Hash algorithm (must exist in `hashlib`)                            |
+| Variable                  | Type | Default  | Description                                                               |
+| ------------------------- | ---- | -------- | ------------------------------------------------------------------------- |
+| `PEPPER_ENABLED`          | bool | `true`   | Master switch                                                             |
+| `PEPPER_MODE`             | str  | `noop`   | One of: `noop`, `prefix`, `suffix`, `prefix_suffix`, `interleave`, `hmac` |
+| `PEPPER_SECRET`           | str  | `""`     | Generic base secret for simple modes                                      |
+| `PEPPER_PREFIX`           | str  | `""`     | Explicit prefix override                                                   |
+| `PEPPER_SUFFIX`           | str  | `""`     | Explicit suffix override                                                   |
+| `PEPPER_INTERLEAVE_FREQ`  | int  | `0`      | Insert token every N chars (≤ 0 → noop)                                   |
+| `PEPPER_INTERLEAVE_TOKEN` | str  | `""`     | Token for interleave mode                                                 |
+| `PEPPER_HMAC_KEY`         | str  | `""`     | Required for HMAC mode                                                    |
+| `PEPPER_HMAC_ALGO`        | str  | `sha256` | Digest algorithm for HMAC                                                 |
 
-Precedence (simple modes): explicit prefix/suffix > `PEPPER_SECRET`.
-
----
-
-## 4. Strategies
-
-| Mode            | Transformation                          | Strength Category        |
-|-----------------|-----------------------------------------|--------------------------|
-| `noop`          | identity                                | –                        |
-| `prefix`        | `prefix + password`                     | Obfuscation only         |
-| `suffix`        | `password + suffix`                     | Obfuscation only         |
-| `prefix_suffix` | `prefix + password + suffix`            | Obfuscation only         |
-| `interleave`    | Inserts token every N chars             | Weak obfuscation         |
-| `hmac`          | `hex(HMAC(key, password))`              | Cryptographic (strong)   |
-
-> Only `hmac` provides *cryptographic* transformation. Others are deterministic
-string decorations (treat them like structured peppering; they do not replace strong hash parameters).
+Notes
+- The config loader is strict: for booleans use `true/false`, not `1/0`.
+- Precedence in simple modes: explicit prefix/suffix > `PEPPER_SECRET`.
 
 ---
 
-## 5. HMAC Mode Notes
+## 4. Strategy Overview
 
-- Uses the selected digest algorithm (default `sha256`)
-- Result is a fixed‑length hex digest (e.g. 64 chars for sha256)
-- Key length warning if `< 8` chars (still allowed, but discouraged)
-- Unsupported algorithm raises at build time (`PepperStrategyConstructionError`)
-- Recommended key: ≥ 32 random bytes (ASCII or Base64)
+| Mode            | Transformation                  | Category          |
+| --------------- | ------------------------------- | ----------------- |
+| `noop`          | Identity                        | None              |
+| `prefix`        | `prefix + password`             | Obfuscation       |
+| `suffix`        | `password + suffix`             | Obfuscation       |
+| `prefix_suffix` | `prefix + password + suffix`    | Obfuscation       |
+| `interleave`    | Insert token every N characters | Weak obfuscation  |
+| `hmac`          | `hex(HMAC(key, password))`      | Cryptographic     |
+
+Only `hmac` provides true cryptographic binding. Other modes are deterministic transformations useful for controlled obfuscation.
 
 ---
 
-## 6. Interleave Mode Notes
+## 5. HMAC Mode and Native Secret
 
-- `PEPPER_INTERLEAVE_FREQ` ≤ 0 ⇒ treated as noop (warning logged)
-- Iteratively inserts one character from token sequence at each step (wraps/cycles)
-- Token falls back to `PEPPER_INTERLEAVE_TOKEN` or `PEPPER_SECRET`
-- Provides light obfuscation only (NOT cryptographic)
+Diagnostics‑aware dual behavior
+
+| Variant capability             | Behavior                                                  |
+| ------------------------------ | --------------------------------------------------------- |
+| `extra['supports_secret']=True`  | Pepper key passed natively (e.g., `Argon2(secret=key)`)   |
+| `extra['supports_secret']=False` | Pepper applied externally as `HMAC(key, password)`        |
+
+This decision is made automatically by `PepperFactory` based on `hashing.registry.get_diagnostic(variant)`.
+
+HMAC details
+- Uses `hashlib` digests (`sha256` default, `sha512`, etc.).
+- Produces fixed‑length hex output.
+- Warns if key < 8 chars (still allowed).
+- Missing key → configuration error (raises).
+- Recommended key: ≥ 32 random bytes (ASCII/base64).
+
+---
+
+## 6. Interleave Mode
+
+- `PEPPER_INTERLEAVE_FREQ ≤ 0` → treated as noop (warning logged).
+- Cyclically inserts characters from the token every N characters.
+- Token comes from `PEPPER_INTERLEAVE_TOKEN` or falls back to `PEPPER_SECRET`.
+- Provides only light obfuscation — not cryptographically secure.
 
 ---
 
 ## 7. Examples
 
-### Prefix + Suffix via Single Secret
+Prefix + Suffix
 
 ```bash
 export PEPPER_MODE=prefix_suffix
-export PEPPER_SECRET='SrvPep'
-# "pass" -> "SrvPeppassSrvPep"
+export PEPPER_PREFIX='['
+export PEPPER_SUFFIX=']'
+# "admin" -> "[admin]"
 ```
 
-### Explicit Prefix / Suffix
-
-```bash
-export PEPPER_MODE=prefix_suffix
-export PEPPER_PREFIX='^'
-export PEPPER_SUFFIX='$'
-# "password" -> "^password$"
-```
-
-### Interleave
+Interleave
 
 ```bash
 export PEPPER_MODE=interleave
 export PEPPER_SECRET='XYZ'
 export PEPPER_INTERLEAVE_FREQ=2
-# "abcdef" -> "abXcdYefZ" (cycles token)
+# "abcdef" -> "abXcdYefZ"
 ```
 
-### HMAC
+HMAC
 
 ```bash
 export PEPPER_MODE=hmac
 export PEPPER_HMAC_KEY='SuperStrongPepperKey!!!'
-export PEPPER_HMAC_ALGO=sha256
-# "secret" -> 64 hex chars
+export PEPPER_HMAC_ALGO=sha512
+# "secret" -> 128 hex chars
 ```
 
 ---
 
-## 8. Integration with Hashing Façade
+## 8. Integration with the Hashing Façade
 
-Simplified flow:
+Simplified flow
 
 ```
 Algorithm.hash(password)
   ↓
-apply_pepper(password, config)      # chooses / caches strategy
+PepperFactory.from_config(variant, config)
   ↓
-implementation.hash_raw(peppered)
+if diagnostics.extra['supports_secret'] is True:
+    algo_kwargs = {"secret": key_bytes}   # native keyed mode (e.g., Argon2)
+else:
+    prehash_pipeline = HMAC(...)          # external HMAC prehash
+  ↓
+implementation.hash_raw(peppered_password)
 ```
 
-You can pass any mapping with `PEPPER_*` keys (not limited to `os.environ`).
+You normally do not call `PepperFactory` yourself. The `Algorithm` façade constructs and applies the pepper plan during initialization.
 
 ---
 
-## 9. Caching & Lazy Loading
+## 9. Diagnostics & Capability Awareness
 
-- Strategy build is cached using a snapshot (sorted tuple of relevant `PEPPER_*` pairs)
-- If keys change → build invoked again (new cache entry)
-- Strategy registry supports lazy import: if the internal registry is empty at first lookup, it auto‑imports strategies
-- For runtime rotation (e.g. key rotation) you may expose an explicit `invalidate_pepper_cache()` (not provided by default)
+The pepper factory uses the cached diagnostics snapshot via the hashing registry (late‑bound import):
 
----
+```python
+import securitykit.hashing.registry as reg
+diag = reg.get_diagnostic("argon2")
+print(diag.available, diag.extra.get("supports_secret"))
+```
 
-## 10. Error Handling & Fallback Matrix
-
-| Scenario                         | Behavior / Result        | Logged |
-|---------------------------------|--------------------------|--------|
-| Unknown `PEPPER_MODE`           | Fallback to `noop`       | Error  |
-| Disabled (`PEPPER_ENABLED=false`)| Uses `noop`             | Debug  |
-| HMAC without key                | Config error → noop      | Error  |
-| Unsupported HMAC digest         | Construction error → noop| Error  |
-| Short HMAC key (<8)             | Still used               | Warn   |
-| Interleave freq ≤ 0             | Treated as noop          | Warn   |
-
-> Fallback design prevents hard authentication failure due to misconfiguration but you **must** monitor logs for silent regressions (e.g. unintended noop).
+Typical outcomes
+- Argon2 ≥ 21.3.0 → `supports_secret=True` → native secret path.
+- Argon2 < 21.3.0 → `supports_secret=False` → HMAC prehash fallback.
+- bcrypt, scrypt, Werkzeug PBKDF2 → always external pepper (no native secret concept).
 
 ---
 
-## 11. Security Guidance
+## 10. Caching and Lazy Loading
 
-1. Prefer **HMAC** mode for genuine cryptographic binding.
-2. Keep HMAC keys outside version control (secret manager recommended).
-3. Plan for future rotation (anticipated: `PEPPER_VERSION`).
-4. Do not treat obfuscation modes (prefix/suffix/interleave) as a substitute for strong hashing parameters.
-5. Monitor logs for fallback warnings—unexpected `noop` may indicate an incident.
-6. Consider deriving per‑tenant or per‑user keys with HKDF (on roadmap).
+- Strategies are lazily registered and loaded on first use.
+- The generic pepper pipeline (`transform/pepper/pipeline.py`) caches built strategies using an LRU keyed by the current `PEPPER_*` snapshot.
+- The PepperFactory itself is intentionally lightweight; it is invoked by `Algorithm` construction and returns a small `PepperApplication` object.
+- For config rotation in API flows, use your API’s reload entry point (e.g., `securitykit.api.password_security.reload_configuration`) to rebuild singletons that capture pepper settings.
 
 ---
 
-## 12. Extending (Custom Strategy)
+## 11. Error Handling and Fallback Behavior
+
+| Scenario                        | Behavior                                      | Origin/Notes                                     |
+| ------------------------------- | --------------------------------------------- | ------------------------------------------------ |
+| `PEPPER_ENABLED=false`          | Bypass (noop)                                 | Applied in `PepperFactory`                       |
+| HMAC key missing                | Configuration error (raises)                  | `PepperFactory` in `hmac` mode                   |
+| Unsupported HMAC digest         | Construction error (raises)                   | Strategy builder validates via `hashlib`         |
+| Interleave freq ≤ 0             | Degrades to noop (warning)                    | Strategy builder logs a warning                  |
+| Unknown mode                    | Configuration error (raises)                  | Strategy builder raises `UnknownPepperStrategy`  |
+| Unexpected strategy error       | Pipeline degrades to noop (logged error)      | `transform/pepper/pipeline.py` fallback path     |
+
+Design intent
+- In high‑level UI pipelines (via `pipeline.apply_pepper`), failures log and degrade to noop.
+- In explicit factory construction (during façade initialization), invalid configuration raises early and loudly so misconfigurations don’t go unnoticed.
+
+---
+
+## 12. Security Guidance
+
+1. Prefer HMAC mode whenever possible.
+2. Store pepper keys outside source control (secrets manager).
+3. Plan for rotation; versioned keys (e.g., `PEPPER_VERSION`) are on the roadmap.
+4. Do not treat obfuscation modes (prefix/suffix/interleave) as cryptographic protection.
+5. Monitor logs for unexpected noop or fallback warnings.
+6. Consider HKDF‑derived per‑tenant or per‑user keys for stronger isolation.
+
+---
+
+## 13. Extending (Custom Strategy)
 
 ```python
 from dataclasses import dataclass
@@ -216,41 +251,44 @@ class ReverseStrategy:
         return password[::-1]
 ```
 
-Usage: `PEPPER_MODE=reverse`
+Enable via:
+```
+PEPPER_MODE=reverse
+```
 
-Guidelines:
-- Keep strategies pure
-- Avoid raising unless truly unrecoverable
-- If expensive to construct, consider internal lightweight caching
-
----
-
-## 13. Deployment Checklist
-
-| Item                                      | OK |
-|-------------------------------------------|----|
-| Chosen `PEPPER_MODE` documented           |    |
-| HMAC key length ≥ 32 chars                |    |
-| No legacy `pepper=` arguments anywhere    |    |
-| Roundtrip test (hash → verify) passes     |    |
-| Logs free of unexpected fallback errors   |    |
-| Rotation plan (if HMAC) documented        |    |
-| Secrets stored in manager (not `.env`)    |    |
+Guidelines
+- Keep transformations pure and stateless.
+- Return a new string (no mutation).
+- If construction is expensive, consider your own internal cache.
 
 ---
 
-## 14. Roadmap
+## 14. Deployment Checklist
 
-| Idea                               | Benefit                                      |
-|------------------------------------|----------------------------------------------|
-| `PEPPER_VERSION` tagging           | Graceful rotation / dual verify window       |
-| HKDF per user (user_id + master)   | Minimize blast radius on partial compromise  |
-| Composite strategy pipelines       | Chain transformations (e.g. HMAC + prefix)   |
-| Validation CLI (`pepper validate`) | Early detection of misconfiguration          |
-| Fallback metrics / counters        | Operational visibility                        |
-| Key derivation from hardware ID    | Env‑specific hardening                        |
+| Item                                  | OK |
+| ------------------------------------- | -- |
+| Chosen `PEPPER_MODE` documented       | ☐  |
+| HMAC key ≥ 32 chars                   | ☐  |
+| No legacy `pepper=` code paths        | ☐  |
+| Round‑trip hash/verify test passes    | ☐  |
+| No unexpected noop/fallback in logs   | ☐  |
+| Rotation procedure documented         | ☐  |
+| Secrets in secure store (not `.env`)  | ☐  |
 
 ---
 
-**Use through the hashing façade** unless building
-deployment/maintenance tooling (e.g. rotation scripts or custom strategies).
+## 15. Roadmap
+
+| Feature                                  | Benefit                                    |
+| ---------------------------------------- | ------------------------------------------ |
+| `PEPPER_VERSION` tagging                 | Smooth rotation / dual verification window |
+| Per‑user HKDF derivation                 | Reduce blast radius on compromise          |
+| Composite pipelines (HMAC + suffix, …)   | Flexible defense‑in‑depth                  |
+| CLI validator (`pepper validate`)        | Detect config errors early                 |
+| Metrics and counters                     | Operational visibility                     |
+| Hardware‑derived secrets                 | Environment‑bound hardening                |
+
+---
+
+Usage recommendation
+Always rely on the hashing façade (`Algorithm` or `HashingFactory`) for pepper handling. Direct use of pepper strategies is reserved for advanced tooling or migrations.

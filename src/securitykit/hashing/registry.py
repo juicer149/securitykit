@@ -5,16 +5,19 @@ Auto-discovery for hashing policies & algorithms.
   securitykit.hashing.algorithms exactly once (decorators register classes).
 - Supports an optional force reload (restores original snapshots via
   the specialized registries' restore functions).
+- Caches a diagnostics snapshot after initial load for all supported variants.
 """
-
 from __future__ import annotations
 import importlib
 import pkgutil
-from typing import Iterable
+from typing import Iterable, Dict
 
 from securitykit.logging_config import logger
+from securitykit.hashing.capabilities import CapabilityInfo
+from securitykit.hashing.diagnostics import collect_all_diagnostics
 
 _DISCOVERED = False
+_DIAGNOSTIC_SNAPSHOT: Dict[str, CapabilityInfo] = {}
 
 
 def _iter_children(pkg) -> Iterable[str]:
@@ -25,40 +28,43 @@ def _iter_children(pkg) -> Iterable[str]:
 def _import_all(package_module_name: str) -> None:
     try:
         pkg = importlib.import_module(package_module_name)
-    except Exception as e:  # pragma: no cover
+    except Exception as e:
         logger.error("Failed to import package %s: %s", package_module_name, e)
         return
     for full in _iter_children(pkg):
         try:
             importlib.import_module(full)
-        except Exception as e:  # pragma: no cover
+        except Exception as e:
             logger.error("Failed to import submodule %s: %s", full, e)
 
 
 def load_all(force: bool = False) -> None:
-    """
-    Perform one-time discovery (or restore snapshots if force=True).
+    global _DISCOVERED, _DIAGNOSTIC_SNAPSHOT
 
-    force=True:
-        - Restores original snapshot state in each specialized registry
-          (algorithm + policy).
-        - Re-imports modules (idempotent decorator writes).
-    """
-    global _DISCOVERED
     if _DISCOVERED and not force:
         return
 
     from securitykit.hashing import algorithm_registry, policy_registry
 
     if force:
-        # restore original class objects
         algorithm_registry.restore_from_snapshots()
         policy_registry.restore_from_snapshots()
-        logger.debug("Registries restored from snapshots (force=True).")
+        logger.debug("Registries restored (force=True).")
 
-    # Always (re-)import modules; decorators are idempotent for same class.
     _import_all("securitykit.hashing.policies")
     _import_all("securitykit.hashing.algorithms")
 
+    # Build diagnostics snapshot once
+    _DIAGNOSTIC_SNAPSHOT = collect_all_diagnostics()
+    logger.debug(
+        "Diagnostics snapshot built: %s",
+        {k: v.to_dict() for k, v in _DIAGNOSTIC_SNAPSHOT.items()},
+    )
+
     _DISCOVERED = True
     logger.debug("Hashing discovery complete (force=%s).", force)
+
+
+def get_diagnostic(variant: str) -> CapabilityInfo | None:
+    """Return cached diagnostic info for a specific algorithm variant."""
+    return _DIAGNOSTIC_SNAPSHOT.get(variant.lower())

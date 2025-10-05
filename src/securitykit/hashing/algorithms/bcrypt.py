@@ -9,9 +9,28 @@ except Exception:
     bcrypt = None  # type: ignore[assignment]
     _BC_AVAILABLE = False
 
+from importlib.metadata import version as _dist_version, PackageNotFoundError  # NEW
+
 from securitykit.hashing.algorithm_registry import register_algorithm
 from securitykit.hashing.policies.bcrypt import BcryptPolicy
 from securitykit.exceptions import HashingError
+from securitykit.hashing.capabilities import CapabilityInfo
+
+
+def get_bcrypt_diagnostics() -> CapabilityInfo:
+    """
+    Return diagnostics for bcrypt backend.
+    """
+    try:
+        # Prefer package metadata
+        try:
+            ver = _dist_version("bcrypt")
+        except PackageNotFoundError:
+            # Fallbacks on older wheels
+            ver = getattr(getattr(bcrypt, "__about__", None), "__version__", None) or getattr(bcrypt, "__version__", "unknown")
+        return CapabilityInfo(available=True, version=ver, extra={"supports_secret": False})
+    except Exception:
+        return CapabilityInfo(available=False, version="unknown", extra={"supports_secret": False})
 
 
 if _BC_AVAILABLE:
@@ -21,7 +40,7 @@ if _BC_AVAILABLE:
         """
         Bcrypt implementation expecting already peppered password input in hash_raw/verify_raw.
         - verify_raw returns bool for valid bcrypt hashes; invalid/foreign formats raise,
-          and central Algorithm decides cross-variant behavior.
+          and the central Algorithm decides cross-variant behavior.
         """
         DEFAULT_POLICY_CLS: ClassVar[type[BcryptPolicy]] = BcryptPolicy
 
