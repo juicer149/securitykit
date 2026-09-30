@@ -3,12 +3,14 @@
 SecurityKit is a modular Python toolkit for secure, evolvable password handling:
 
 - Modern password hashing (algorithms opt‑in via extras; conditional registration)
-- Centralized, diagnostics‑aware pepper subsystem (config‑driven strategies; native secret when supported; HMAC prehash otherwise)
+- Centralized pepper subsystem: HMAC prehash (recommended), plus legacy decoration modes
 - Password complexity policies, strength evaluation, validator, and fast boolean gate
 - Deterministic config → object pipeline (env/mapping → validated dataclasses)
 - Benchmark framework for tuning hash parameters (manual or auto bootstrap)
-- Safe bootstrap with integrity protection (PEPPER_* keys are excluded)
-- High test coverage, minimal global state, explicit extension points
+- Bootstrap that benchmarks the host and writes a tuned `.env` (PEPPER_* keys are excluded)
+- Secure defaults at OWASP levels (scrypt N=2^17, PBKDF2 600,000 iterations), with warnings below them
+- Configuration errors fail closed: a misconfigured pepper raises instead of silently hashing without it
+- Minimal global state and explicit extension points
 
 ---
 
@@ -45,7 +47,7 @@ SecurityKit is a modular Python toolkit for secure, evolvable password handling:
 | Centralization   | Pepper logic lives in one subsystem; algorithms never accept pepper directly |
 | Isolation        | Global state limited to small registries and a cached diagnostics snapshot (snapshot/restore in tests) |
 | Extensibility    | New algorithms/policies/pepper strategies via lightweight decorators |
-| Observability    | Warnings for weak params, structured logs, integrity hash on generated configs |
+| Observability    | Warnings for weak params, structured logs, checksum on generated configs |
 | Fail Fast        | Aggregated configuration validation errors; no half‑configured states |
 | Testability      | Narrow façades, pure conversions, registry‑driven parametrization |
 | Evolvability     | `needs_rehash` + login‑time upgrade; safe parameter raises with zero downtime |
@@ -138,11 +140,13 @@ Strategy modes:
 | `interleave`    | Insert token every N chars                   | Weak obfuscation |
 | `hmac`          | `hex(HMAC(key, password))`                   | Cryptographic |
 
-Diagnostics‑aware HMAC:
-- If a variant’s diagnostics advertise `extra["supports_secret"]=True` (e.g., Argon2 with native keyed mode), the pepper key is passed as a native `secret` argument to the algorithm; no prehash.
-- Otherwise, HMAC is applied as a prehash pipeline.
+HMAC is applied as a prehash before the password reaches the hashing
+algorithm. The factory can pass the key as a native `secret` instead when
+a variant's diagnostics report `extra["supports_secret"]=True`, but none
+of the bundled algorithms do today: argon2-cffi's `PasswordHasher` does
+not accept a secret, so Argon2 also uses the HMAC prehash.
 
-Only `hmac` provides cryptographic strengthening. Obfuscation modes are deterministic transforms for explicit, non‑crypto use cases. Benchmark outputs intentionally exclude all `PEPPER_*` keys.
+Only `hmac` provides cryptographic strengthening. The decoration modes (`prefix`, `suffix`, `prefix_suffix`, `interleave`) are kept for compatibility with existing hashes and log a warning when used. Benchmark outputs intentionally exclude all `PEPPER_*` keys.
 
 See the dedicated [Pepper README](./src/securitykit/transform/pepper/README.md).
 
@@ -222,7 +226,7 @@ Benchmark flow:
 
 Auto bootstrap (`ensure_env_config()`):
 - Loads `.env` and `.env.local`
-- Validates integrity hash if present
+- Checks the checksum of a generated config if present (detects accidental edits; it is not keyed, so it does not protect against tampering)
 - Checks required keys for selected variant (`HASH_VARIANT`)
 - If incomplete & `AUTO_BENCHMARK=1` & policy has `BENCH_SCHEMA`:
   - Run benchmark (pepper neutralized)
@@ -292,7 +296,7 @@ digest = algo.hash("Password123!")
 assert algo.verify(digest, "Password123!")
 ```
 
-### Pepper (HMAC with diagnostics‑aware native secret)
+### Pepper (HMAC)
 ```python
 import os
 os.environ["PEPPER_MODE"] = "hmac"
@@ -440,7 +444,7 @@ SECURITYKIT_ENV=development
 Generated metadata (by bootstrap):
 ```
 GENERATED_BY=securitykit-bench vX.Y.Z
-GENERATED_SHA256=<integrity-hash>
+GENERATED_SHA256=<checksum>
 ```
 
 ---

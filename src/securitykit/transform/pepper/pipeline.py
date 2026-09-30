@@ -5,7 +5,9 @@ Pepper application pipeline:
 2. Build (and cache) strategy
 3. Apply strategy
 
-Any PepperError results in a logged message and fallback to NoOp.
+Configuration errors are raised, never silently ignored: a pepper that
+was configured but cannot be applied must not quietly turn into "no
+pepper", because every hash created in that state would be unpeppered.
 """
 from __future__ import annotations
 from functools import lru_cache
@@ -16,7 +18,7 @@ from securitykit.logging_config import logger
 from securitykit.exceptions import PepperError
 from .model import PepperConfig
 from .builder import build_pepper_strategy
-from .core import PepperStrategy, get_strategy_factory
+from .core import PepperStrategy
 
 PEPPER_PREFIX = "PEPPER_"
 
@@ -37,15 +39,13 @@ def _snapshot(mapping: Mapping[str, Any]) -> tuple[tuple[str, str], ...]:
 @lru_cache(maxsize=1)
 def _cached_strategy(snapshot: tuple[tuple[str, str], ...]) -> PepperStrategy:
     mapping = {k: v for k, v in snapshot}
+    cfg = _build_config(mapping)
+
     try:
-        cfg = _build_config(mapping)
         return build_pepper_strategy(cfg)
     except PepperError as e:
-        logger.error("Pepper strategy failure (%s) → noop fallback", e)
-        return get_strategy_factory("noop")()
-    except Exception as e:  # pragma: no cover (unexpected)
-        logger.exception("Unexpected pepper construction error: %s", e)
-        return get_strategy_factory("noop")()
+        logger.error("Invalid pepper configuration: %s", e)
+        raise
 
 
 def apply_pepper(
@@ -55,8 +55,11 @@ def apply_pepper(
     """
     Apply configured pepper strategy.
 
-    Returns the transformed password (never raises on pepper issues;
-    logs and falls back to noop strategy instead).
+    Returns the transformed password.
+
+    Raises:
+        PepperError: if the PEPPER_* configuration is invalid. Failing
+            closed is deliberate; see the module docstring.
     """
     if not password:
         return password

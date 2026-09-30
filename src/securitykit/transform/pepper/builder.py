@@ -32,6 +32,13 @@ from .model import PepperConfig
 from . import strategies  # noqa: F401  (ensures built-ins are registered)
 
 
+# Modes that only decorate the password. They are kept for compatibility
+# with existing hashes, but they do not add cryptographic strength.
+_DECORATION_MODES = frozenset(
+    {"prefix", "suffix", "prefix_suffix", "interleave"}
+)
+
+
 # ---------------------------------------------------------------------------
 # Core builder
 # ---------------------------------------------------------------------------
@@ -49,6 +56,13 @@ def build_pepper_strategy(cfg: PepperConfig):
         return get_strategy_factory("noop")()
 
     secret = cfg.secret or ""
+
+    if mode in _DECORATION_MODES:
+        logger.warning(
+            "PEPPER_MODE=%s only decorates the password and is not "
+            "cryptographic. Prefer PEPPER_MODE=hmac.",
+            mode,
+        )
 
     # --- Prefix ---------------------------------------------------------
     if mode == "prefix":
@@ -68,8 +82,9 @@ def build_pepper_strategy(cfg: PepperConfig):
     # --- Interleave -----------------------------------------------------
     if mode == "interleave":
         if cfg.interleave_freq <= 0:
-            logger.warning("PEPPER_INTERLEAVE_FREQ <= 0 → falling back to noop")
-            return get_strategy_factory("noop")()
+            raise PepperConfigError(
+                "PEPPER_INTERLEAVE_FREQ must be > 0 for interleave mode"
+            )
         token = cfg.interleave_token or secret
         return get_strategy_factory("interleave")(
             token=token,

@@ -34,7 +34,7 @@ The design is variant‑agnostic, late‑bound to the diagnostics registry, and 
 | Config‑Driven          | Behavior controlled exclusively via `PEPPER_*` keys.                                                      |
 | Diagnostics‑Aware      | Uses algorithm diagnostics (`extra['supports_secret']`) to choose native vs external peppering.           |
 | Extensible             | Add new strategies without touching existing algorithms.                                                  |
-| Safe Defaults          | For UI pipelines, failures degrade to noop with logging; for factory construction, invalid config raises. |
+| Fail Closed            | Invalid configuration always raises. A configured pepper never silently turns into no pepper.             |
 | Auditable              | All fallbacks and warnings go through centralized logging.                                                |
 
 ---
@@ -75,7 +75,7 @@ Note: In normal application flows you will not call `PepperFactory` directly; th
 | `PEPPER_SECRET`           | str  | `""`     | Generic base secret for simple modes                                      |
 | `PEPPER_PREFIX`           | str  | `""`     | Explicit prefix override                                                   |
 | `PEPPER_SUFFIX`           | str  | `""`     | Explicit suffix override                                                   |
-| `PEPPER_INTERLEAVE_FREQ`  | int  | `0`      | Insert token every N chars (≤ 0 → noop)                                   |
+| `PEPPER_INTERLEAVE_FREQ`  | int  | `0`      | Insert token every N chars (must be > 0 in interleave mode)               |
 | `PEPPER_INTERLEAVE_TOKEN` | str  | `""`     | Token for interleave mode                                                 |
 | `PEPPER_HMAC_KEY`         | str  | `""`     | Required for HMAC mode                                                    |
 | `PEPPER_HMAC_ALGO`        | str  | `sha256` | Digest algorithm for HMAC                                                 |
@@ -123,7 +123,7 @@ HMAC details
 
 ## 6. Interleave Mode
 
-- `PEPPER_INTERLEAVE_FREQ ≤ 0` → treated as noop (warning logged).
+- `PEPPER_INTERLEAVE_FREQ ≤ 0` → configuration error (raises).
 - Cyclically inserts characters from the token every N characters.
 - Token comes from `PEPPER_INTERLEAVE_TOKEN` or falls back to `PEPPER_SECRET`.
 - Provides only light obfuscation — not cryptographically secure.
@@ -193,9 +193,9 @@ print(diag.available, diag.extra.get("supports_secret"))
 ```
 
 Typical outcomes
-- Argon2 ≥ 21.3.0 → `supports_secret=True` → native secret path.
-- Argon2 < 21.3.0 → `supports_secret=False` → HMAC prehash fallback.
-- bcrypt, scrypt, Werkzeug PBKDF2 → always external pepper (no native secret concept).
+- All bundled algorithms report `supports_secret=False`, so HMAC is
+  applied as a prehash. argon2-cffi's `PasswordHasher` does not take a
+  secret; the native path exists for implementations that do.
 
 ---
 
@@ -215,13 +215,15 @@ Typical outcomes
 | `PEPPER_ENABLED=false`          | Bypass (noop)                                 | Applied in `PepperFactory`                       |
 | HMAC key missing                | Configuration error (raises)                  | `PepperFactory` in `hmac` mode                   |
 | Unsupported HMAC digest         | Construction error (raises)                   | Strategy builder validates via `hashlib`         |
-| Interleave freq ≤ 0             | Degrades to noop (warning)                    | Strategy builder logs a warning                  |
+| Interleave freq ≤ 0             | Configuration error (raises)                  | Strategy builder raises `PepperConfigError`      |
 | Unknown mode                    | Configuration error (raises)                  | Strategy builder raises `UnknownPepperStrategy`  |
-| Unexpected strategy error       | Pipeline degrades to noop (logged error)      | `transform/pepper/pipeline.py` fallback path     |
+| Decoration mode in use          | Works, with a warning                         | Not cryptographic; prefer `hmac`                 |
 
 Design intent
-- In high‑level UI pipelines (via `pipeline.apply_pepper`), failures log and degrade to noop.
-- In explicit factory construction (during façade initialization), invalid configuration raises early and loudly so misconfigurations don’t go unnoticed.
+- Every entry point fails closed. If a pepper is configured but cannot be
+  applied, hashing stops with an error instead of silently producing
+  unpeppered hashes that would later fail to verify, or verify without
+  the pepper.
 
 ---
 

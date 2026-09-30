@@ -21,11 +21,12 @@ class WerkzeugPBKDF2Policy:
     # Keep ENV_PREFIX aligned with variant uppercased + underscore to match your factory behavior
     ENV_PREFIX: ClassVar[str] = "WERKZEUG_PBKDF2_"
     BENCH_SCHEMA: ClassVar[dict[str, list[BenchValue]]] = {
-        "iterations": [150_000, 200_000, 260_000, 300_000, 390_000],
+        "iterations": [600_000, 800_000, 1_000_000],
     }
 
     method: str = "pbkdf2:sha256"
-    iterations: int = 260_000
+    # OWASP Password Storage Cheat Sheet: 600,000 for PBKDF2-HMAC-SHA256.
+    iterations: int = 600_000
     salt_length: int = 16
 
     def to_dict(self) -> dict[str, Any]:
@@ -34,7 +35,11 @@ class WerkzeugPBKDF2Policy:
     def __post_init__(self) -> None:
         if not self.method.startswith("pbkdf2:"):
             raise InvalidPolicyConfig("WerkzeugPBKDF2Policy.method must start with 'pbkdf2:'")
-        if self.iterations < 100_000:
-            logger.warning("Werkzeug PBKDF2 iterations %d are low (< 100k).", self.iterations)
+        if self.iterations < 600_000:
+            logger.warning(
+                "Werkzeug PBKDF2 iterations %d are below the OWASP "
+                "recommendation (600,000 for SHA-256).",
+                self.iterations,
+            )
         if self.salt_length < 8:
             logger.warning("Werkzeug PBKDF2 salt_length %d is small (< 8).", self.salt_length)

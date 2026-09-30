@@ -20,7 +20,7 @@ help:
 	@echo "  make clean       Remove caches and build artifacts"
 
 venv:
-	python -m venv $(VENV)
+	python3 -m venv $(VENV)
 	$(PIP) install --upgrade pip setuptools wheel
 
 install: venv

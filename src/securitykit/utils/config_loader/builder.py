@@ -48,7 +48,7 @@ class PolicyBuilder:
                     errors.append(f"Missing required '{key}'")
                 else:
                     resolved[pname] = param.default
-                    logger.warning(
+                    logger.debug(
                         "Optional config '%s' missing for %s, using default=%r",
                         key,
                         label,

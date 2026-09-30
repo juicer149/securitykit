@@ -10,9 +10,11 @@ from securitykit.exceptions import InvalidPolicyConfig
 from securitykit.logging_config import logger
 
 
-# Tuned for CI/resource-friendly defaults
-_SCRYPT_MIN_LOGN = 12   # 2**12
-_SCRYPT_RECOMMENDED_LOGN = 13  # 2**13
+# OWASP Password Storage Cheat Sheet: N=2**17, r=8, p=1 (about 128 MiB).
+# Values below the recommendation are allowed (tests and small hosts)
+# but logged as a warning.
+_SCRYPT_MIN_LOGN = 12   # 2**12, hard floor for anything sensible
+_SCRYPT_RECOMMENDED_LOGN = 17  # 2**17, OWASP recommendation
 _SCRYPT_MAX_LOGN = 20   # 2**20
 
 @dataclass(frozen=True)
@@ -23,8 +25,9 @@ class ScryptPolicy:
     """
     ENV_PREFIX: ClassVar[str] = "SCRYPT_"
     BENCH_SCHEMA: ClassVar[dict[str, list[BenchValue]]] = {
-        # Keep candidates modest to avoid OpenSSL maxmem caps in CI
-        "n": [2**12, 2**13, 2**14],
+        # Candidates around the OWASP recommendation. 2**17 needs about
+        # 128 MiB, within the default SCRYPT_MAXMEM of 512 MiB.
+        "n": [2**15, 2**16, 2**17],
         "r": [8],
         "p": [1, 2],
     }
@@ -42,8 +45,11 @@ class ScryptPolicy:
         if self.n <= 0 or self.n & (self.n - 1) != 0:
             raise InvalidPolicyConfig("scrypt 'n' must be a power of two (e.g., 16384).")
         logn = int(math.log2(self.n))
-        if logn < _SCRYPT_MIN_LOGN:
-            logger.warning("scrypt n=%d (2**%d) below recommended minimum (2**%d).", self.n, logn, _SCRYPT_MIN_LOGN)
+        if logn < _SCRYPT_RECOMMENDED_LOGN:
+            logger.warning(
+                "scrypt n=%d (2**%d) is below the OWASP recommendation (2**%d).",
+                self.n, logn, _SCRYPT_RECOMMENDED_LOGN,
+            )
         if logn > _SCRYPT_MAX_LOGN:
             logger.warning("scrypt n=%d (2**%d) unusually high (> 2**%d).", self.n, logn, _SCRYPT_MAX_LOGN)
         if self.r <= 0:

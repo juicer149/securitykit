@@ -5,16 +5,23 @@ from securitykit.transform.pepper.model import PepperConfig
 from securitykit.exceptions import PepperConfigError, UnknownPepperStrategyError, PepperStrategyConstructionError
 
 
-def test_pepper_unknown_mode_fallback_noop(caplog):
-    out = apply_pepper("secret", {"PEPPER_MODE": "doesnotexist"})
-    assert out == "secret"
-    assert any("fallback" in r.message.lower() for r in caplog.records)
+def test_pepper_unknown_mode_fails_closed():
+    with pytest.raises(UnknownPepperStrategyError):
+        apply_pepper("secret", {"PEPPER_MODE": "doesnotexist"})
 
 
 def test_pepper_interleave_freq_zero():
-    out = apply_pepper("abcd", {"PEPPER_MODE": "interleave", "PEPPER_INTERLEAVE_FREQ": "0", "PEPPER_SECRET": "X"})
-    # No change expected because freq <= 0
-    assert out == "abcd"
+    with pytest.raises(PepperConfigError):
+        apply_pepper(
+            "abcd",
+            {"PEPPER_MODE": "interleave", "PEPPER_INTERLEAVE_FREQ": "0", "PEPPER_SECRET": "X"},
+        )
+
+
+def test_decoration_modes_warn_that_they_are_not_cryptographic(caplog):
+    out = apply_pepper("pw", {"PEPPER_MODE": "prefix", "PEPPER_SECRET": "^"})
+    assert out == "^pw"
+    assert any("not cryptographic" in r.message for r in caplog.records)
 
 
 def test_pepper_hmac_missing_key_raises():
