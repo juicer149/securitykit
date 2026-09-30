@@ -12,7 +12,6 @@ Responsibilities:
 
 This version relies on:
   - Cached diagnostics from `hashing.registry`
-  - Argon2Policy for version and internal pepper support
   - PepperFactory for prehash or secret-based pepper integration
 """
 
@@ -41,9 +40,12 @@ class Algorithm:
       - Resolve the variant class dynamically via registry.
       - Obtain a PepperApplication via PepperFactory:
           • prehash_pipeline(password)      → transform before hashing
-          • algo_kwargs={"secret": ...}     → pass native secret (e.g., Argon2)
+          • algo_kwargs={"secret": ...}     → native secret, if a variant supports it
       - Provide a unified API: hash(), verify(), needs_rehash(), etc.
       - Surface consistent diagnostics and logging.
+
+    Can be constructed directly, e.g. Algorithm("argon2"); the built-in
+    algorithms are registered on first use.
     """
 
     def __init__(
@@ -61,6 +63,9 @@ class Algorithm:
         # ---------------------------------------------------------------------
         # Resolve algorithm class
         # ---------------------------------------------------------------------
+        from securitykit.hashing.registry import load_all  # local: avoids import cycle
+        load_all()
+
         try:
             algo_cls = get_algorithm_class(self.variant)
         except UnknownAlgorithmError as e:
@@ -83,11 +88,9 @@ class Algorithm:
         # ---------------------------------------------------------------------
         # Instantiate concrete algorithm implementation
         # ---------------------------------------------------------------------
-        try:
-            self.impl = algo_cls(policy, **self._algo_kwargs, **kwargs)
-        except TypeError:
-            # Backward compatibility for algorithms without **kwargs support
-            self.impl = algo_cls(policy)
+        # No fallback on TypeError: retrying without algo_kwargs would drop
+        # the pepper and hash without it. A mismatch must fail loudly.
+        self.impl = algo_cls(policy, **self._algo_kwargs, **kwargs)
 
         # Keep the resolved policy (if the implementation exposes one)
         self.policy = getattr(self.impl, "policy", self.policy)

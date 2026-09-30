@@ -65,7 +65,11 @@ def _sha256_of(config: dict[str, str]) -> str:
 
 
 def _validate_generated_block(path: Path):
-    """Check integrity of an existing .env.local (GENERATED_SHA256)."""
+    """
+    Compare the GENERATED_SHA256 checksum of an existing .env.local with its
+    contents. This detects accidental edits; it is not keyed, so it does not
+    protect against deliberate tampering.
+    """
     if not path.exists():
         return
     try:
@@ -86,7 +90,8 @@ def _validate_generated_block(path: Path):
     recalculated = _sha256_of(tmp)
     if recorded != recalculated:
         logger.warning(
-            "Integrity mismatch for %s (GENERATED_SHA256 differs). File may have been modified.",
+            "Checksum mismatch for %s (GENERATED_SHA256 differs). "
+            "The file has been edited since it was generated.",
             path,
         )
 
@@ -102,8 +107,8 @@ def ensure_env_config():
       - Load .env then .env.local (local overrides).
       - If all required BENCH_SCHEMA-derived keys present → return.
       - If incomplete and AUTO_BENCHMARK=1 → run benchmark (pepper neutralized
-        by benchmark subsystem so timing reflects raw hashing cost).
-      - Generate .env.local with chosen parameters + integrity hash.
+        by the benchmark config so timing reflects raw hashing cost).
+      - Generate .env.local with chosen parameters + checksum.
       - Do NOT export any PEPPER_* keys here: pepper is an orthogonal concern.
 
     Safe in multi-process scenarios: file lock + re-check after acquisition.
@@ -116,10 +121,14 @@ def ensure_env_config():
     load_dotenv(Path(".env"), override=False)
     load_dotenv(Path(".env.local"), override=True)
 
-    # Validate integrity if .env.local exists
+    # Check the checksum if .env.local exists
     _validate_generated_block(Path(".env.local"))
 
     variant = _env("HASH_VARIANT").lower() or sk_config.DEFAULTS["HASH_VARIANT"]
+
+    from securitykit.hashing.registry import load_all  # local: avoids import cycle
+    load_all()
+
     try:
         policy_cls = get_policy_class(variant)
     except Exception as e:
@@ -185,9 +194,7 @@ def ensure_env_config():
         )
 
         try:
-            # BenchmarkConfig (as previously patched) neutralizes pepper internally
-            # if you adopted the neutralize_pepper flag; otherwise bench/bench.py
-            # already disables pepper per Algorithm invocation.
+            # BenchmarkConfig disables the pepper by default (neutralize_pepper=True)
             config = BenchmarkConfig(variant=variant, target_ms=target_ms)
             runner = BenchmarkRunner(config)
             result = runner.run()

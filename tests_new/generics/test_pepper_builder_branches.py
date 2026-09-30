@@ -45,3 +45,9 @@ def test_pepper_lazy_list_strategies():
     names = list_strategies()
     for n in ("noop", "suffix", "hmac"):
         assert n in names
+
+
+@pytest.mark.parametrize("mode", ["prefix", "suffix", "prefix_suffix", "interleave"])
+def test_decoration_mode_without_value_fails_closed(mode):
+    with pytest.raises(PepperConfigError):
+        apply_pepper("abcd", {"PEPPER_MODE": mode, "PEPPER_INTERLEAVE_FREQ": "2"})

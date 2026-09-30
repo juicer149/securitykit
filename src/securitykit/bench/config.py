@@ -16,13 +16,16 @@ class BenchmarkConfig:
     target_ms: int = DEFAULT_TARGET_MS
     tolerance: float = DEFAULT_TOLERANCE
     rounds: int = DEFAULT_ROUNDS
-    neutralize_pepper: bool = True  # new
+    neutralize_pepper: bool = True
     extra_config: Mapping[str, str] | None = None  # additional façade config
 
     policy_cls: type = field(init=False)
     schema: dict[str, list[BenchValue]] = field(init=False)
 
     def __post_init__(self):
+        from securitykit.hashing.registry import load_all  # local: avoids import cycle
+        load_all()
+
         policy_cls = get_policy_class(self.variant)
         schema = getattr(policy_cls, "BENCH_SCHEMA", None)
         if not schema:

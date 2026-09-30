@@ -8,8 +8,8 @@ PepperStrategy instance.
 Design goals:
     • Keep the ConfigLoader generic — all semantic validation happens here.
     • Make strategy selection explicit and deterministic.
-    • Fail fast on invalid configuration, but never crash the system
-      (fallback handled by the pipeline layer).
+    • Fail closed: invalid or incomplete configuration raises. A configured
+      pepper never silently turns into "no pepper".
 
 Also provides build_from_config(), a convenience helper for adapter.py
 to construct a strategy directly from an environment mapping.
@@ -39,6 +39,13 @@ _DECORATION_MODES = frozenset(
 )
 
 
+def _require(value: str, keys: str, mode: str) -> str:
+    """An empty decoration value would silently apply no pepper at all."""
+    if not value:
+        raise PepperConfigError(f"PEPPER_MODE={mode} requires {keys}")
+    return value
+
+
 # ---------------------------------------------------------------------------
 # Core builder
 # ---------------------------------------------------------------------------
@@ -66,17 +73,21 @@ def build_pepper_strategy(cfg: PepperConfig):
 
     # --- Prefix ---------------------------------------------------------
     if mode == "prefix":
-        return get_strategy_factory("prefix")(prefix=cfg.prefix or secret)
+        return get_strategy_factory("prefix")(
+            prefix=_require(cfg.prefix or secret, "PEPPER_PREFIX or PEPPER_SECRET", mode),
+        )
 
     # --- Suffix ---------------------------------------------------------
     if mode == "suffix":
-        return get_strategy_factory("suffix")(suffix=cfg.suffix or secret)
+        return get_strategy_factory("suffix")(
+            suffix=_require(cfg.suffix or secret, "PEPPER_SUFFIX or PEPPER_SECRET", mode),
+        )
 
     # --- Prefix + Suffix ------------------------------------------------
     if mode == "prefix_suffix":
         return get_strategy_factory("prefix_suffix")(
-            prefix=cfg.prefix or secret,
-            suffix=cfg.suffix or secret,
+            prefix=_require(cfg.prefix or secret, "PEPPER_PREFIX or PEPPER_SECRET", mode),
+            suffix=_require(cfg.suffix or secret, "PEPPER_SUFFIX or PEPPER_SECRET", mode),
         )
 
     # --- Interleave -----------------------------------------------------
@@ -85,9 +96,12 @@ def build_pepper_strategy(cfg: PepperConfig):
             raise PepperConfigError(
                 "PEPPER_INTERLEAVE_FREQ must be > 0 for interleave mode"
             )
-        token = cfg.interleave_token or secret
         return get_strategy_factory("interleave")(
-            token=token,
+            token=_require(
+                cfg.interleave_token or secret,
+                "PEPPER_INTERLEAVE_TOKEN or PEPPER_SECRET",
+                mode,
+            ),
             frequency=cfg.interleave_freq,
         )
 

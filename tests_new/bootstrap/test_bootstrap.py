@@ -113,7 +113,7 @@ def test_incomplete_env_auto_benchmark_on_generates_file(chdir_tmp, capture_logs
     assert "generated argon2 hashing config" in log_text or "generated" in log_text
 
 
-def test_integrity_mismatch_warning(chdir_tmp, capture_logs, neutral_bench_schema, stub_runner):
+def test_checksum_mismatch_warning(chdir_tmp, capture_logs, neutral_bench_schema, stub_runner):
     os.environ["HASH_VARIANT"] = "argon2"
     os.environ["AUTO_BENCHMARK"] = "1"
     ensure_env_config()
@@ -131,7 +131,7 @@ def test_integrity_mismatch_warning(chdir_tmp, capture_logs, neutral_bench_schem
 
     ensure_env_config()
     log_text = capture_logs.getvalue().lower()
-    assert "integrity mismatch" in log_text
+    assert "checksum mismatch" in log_text
 
 
 def test_unknown_variant_graceful_exit(chdir_tmp, capture_logs):

@@ -1,47 +1,14 @@
-import inspect
+import importlib.util
+
 import pytest
 
 from securitykit.hashing.capabilities import CapabilityInfo
 from securitykit.hashing.factory import HashingFactory
+from securitykit.hashing.algorithm import Algorithm
+from securitykit.bench.config import BenchmarkConfig
 
 
-@pytest.mark.skipif("argon2" not in pytest.importorskip("pkgutil").iter_modules(), reason="argon2 not installed")
-def test_algorithm_argon2_native_secret_e2e(monkeypatch):
-    # Ensure argon2-cffi supports the 'secret' parameter, otherwise skip.
-    a2 = pytest.importorskip("argon2")
-    PasswordHasher = getattr(a2, "PasswordHasher")
-    sig = inspect.signature(PasswordHasher)
-    if "secret" not in sig.parameters:
-        pytest.skip("argon2-cffi does not support PasswordHasher(secret=...) in this environment")
-
-    # Advertise native secret support via diagnostics
-    def fake_get_diag(_variant):
-        return CapabilityInfo(available=True, version=getattr(a2, "__version__", "unknown"), extra={"supports_secret": True})
-    monkeypatch.setattr("securitykit.hashing.registry.get_diagnostic", fake_get_diag)
-
-    password = "CorrectHorseBatteryStaple!"
-    cfg1 = {
-        "HASH_VARIANT": "argon2",
-        "PEPPER_ENABLED": True,
-        "PEPPER_MODE": "hmac",
-        "PEPPER_HMAC_KEY": "PepperKey-One",
-    }
-    algo1 = HashingFactory(cfg1).get_algorithm()
-    digest = algo1.hash(password)
-    assert algo1.verify(digest, password) is True
-
-    # Change the pepper key: verification should now fail (different Argon2 secret)
-    cfg2 = {
-        "HASH_VARIANT": "argon2",
-        "PEPPER_ENABLED": True,
-        "PEPPER_MODE": "hmac",
-        "PEPPER_HMAC_KEY": "PepperKey-Two",
-    }
-    algo2 = HashingFactory(cfg2).get_algorithm()
-    assert algo2.verify(digest, password) is False
-
-
-@pytest.mark.skipif("bcrypt" not in pytest.importorskip("pkgutil").iter_modules(), reason="bcrypt not installed")
+@pytest.mark.skipif(importlib.util.find_spec("bcrypt") is None, reason="bcrypt not installed")
 def test_algorithm_bcrypt_hmac_prehash_e2e(monkeypatch):
     # Advertise no native secret support for bcrypt so PepperFactory uses HMAC prehash
     def fake_get_diag(_variant):
@@ -72,3 +39,13 @@ def test_algorithm_bcrypt_hmac_prehash_e2e(monkeypatch):
     }
     algo2 = HashingFactory(cfg2).get_algorithm()
     assert algo2.verify(digest, password) is False
+
+
+def test_algorithm_can_be_constructed_directly():
+    algo = Algorithm("scrypt", config={"PEPPER_ENABLED": "false"})
+    digest = algo.hash("pw")
+    assert algo.verify(digest, "pw")
+
+
+def test_benchmark_config_can_be_constructed_directly():
+    assert BenchmarkConfig("argon2").policy_cls.__name__ == "Argon2Policy"

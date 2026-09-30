@@ -10,7 +10,6 @@ This version:
   • Exposes unified attributes used by PepperFactory:
         - supports_internal_pepper (bool)
         - version (str)
-  • Emits clear warnings when the installed library is outdated
   • Validates and warns about configuration bounds
 """
 
@@ -87,11 +86,8 @@ class Argon2Policy:
             )
 
         if not self.supports_internal_pepper:
-            logger.warning(
-                "Argon2 (argon2-cffi %s) does not support native secret parameter. "
-                "SecurityKit will apply external HMAC peppering instead. "
-                "Upgrade to argon2-cffi>=21.3.0 for native keyed mode.",
-                self.version,
+            logger.debug(
+                "Argon2 native secret not used; pepper is applied as an HMAC prehash."
             )
         else:
             logger.debug(
