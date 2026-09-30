@@ -1,5 +1,7 @@
 # SecurityKit
 
+[![Tests](https://github.com/juicer149/securitykit/actions/workflows/ci.yml/badge.svg)](https://github.com/juicer149/securitykit/actions/workflows/ci.yml)
+
 Password hashing for Python applications behind one small API: pick an
 algorithm through configuration, add a pepper, and upgrade old hashes
 when users log in.
